@@ -114,13 +114,15 @@ enum Leftovers {
         let labels = p.labels, bundles = p.bundles
         let installed: (String) -> String? = { id in
             let k = id.lowercased()
-            if let a = inv.owner(of: k) { return a.name }
+            if let a = inv.owner(of: id) { return a.name }   // LaunchServices is asked with the case found on disk
             // An installed app whose ID starts with this one (com.vendor.app.pro for com.vendor.app)
             // may use the same data, so it counts too.
             if let a = inv.apps.first(where: { BundleIDs.belongs($0.key, to: k) }) { return a.value.name }
             if let a = inv.embedded.first(where: { BundleIDs.belongs($0.key, to: k) }) { return a.value.name }
             if let lookup = inv.lookup {   // probe 1 for each shorter ID: com.vendor.app for com.vendor.app.x
-                for pre in LeftoverMatcher.prefixes(k).dropFirst() { if let a = lookup(pre) { return a.name } }
+                for pre in LeftoverMatcher.prefixes(id).dropFirst() {
+                    if let a = lookup(pre) ?? (pre == pre.lowercased() ? nil : lookup(pre.lowercased())) { return a.name }
+                }
             }
             if let l = labels.first(where: { $0.hasPrefix(k) || BundleIDs.belongs(k, to: $0) }) { return "launchd job \(l)" }
             if let b = bundles.first(where: { BundleIDs.related(k, $0.id) }) { return b.name }
@@ -141,7 +143,10 @@ enum Leftovers {
 
     static func scan(_ ctx: ScanContext, progress: (String) -> Void = { _ in }) -> Result {
         progress("Listing installed apps…")
-        let ev = evidence(ctx, probes(ctx.roots))
+        var ev = evidence(ctx, probes(ctx.roots))
+        let ask = ev.spotlight
+        ev.spotlight = { ids in ctx.cancel.isSet ? .failed : ask(ids) }   // Stop works while Spotlight is slow
+        var kept: [String] = []
         var cands: [LeftoverCandidate] = []
         var pendingNames: [(LeftoverCandidate, stat)] = []
         var notices: [Category] = []
@@ -175,7 +180,11 @@ enum Leftovers {
                 guard !ctx.ignored(p), let st = ScanEngine.lstatInfo(p), (st.st_mode & S_IFMT) != S_IFLNK else { continue }
                 var c = LeftoverCandidate(place: place, name: n, path: p)
                 switch LeftoverMatcher.screen(c.key, ev) {
-                case .drop: continue
+                case .drop(let why):
+                    if c.key.kind == .bundleID && !why.hasPrefix("protected") && !why.hasPrefix("App Monitor") {
+                        kept.append(c.key.key.lowercased())
+                    }
+                    continue
                 case .name: if place.tier == .orphan { pendingNames.append((c, st)) }
                 case .bundle: measure(&c, st, ctx); cands.append(c)
                 }
@@ -190,7 +199,7 @@ enum Leftovers {
         }
         progress("Checking with Spotlight…")
         let decision = ctx.cancel.isSet ? LeftoverDecision()
-            : LeftoverMatcher.decide(cands, ev: ev, limits: ctx.limits, now: ctx.now)
+            : LeftoverMatcher.decide(cands, ev: ev, limits: ctx.limits, now: ctx.now, kept: kept)
 
         var cats = decision.groups.map(category).sorted { ($0.size, $1.title) > ($1.size, $0.title) }
         for c in cats.indices {     // S7: shown as "quit it first", and skipped when cleaned
@@ -258,7 +267,10 @@ enum Leftovers {
                               risk: li.selectable ? .review : .info, method: li.selectable ? .trash : .none,
                               reason: li.reason, allowRoot: c.place.system ? "" : URL(fileURLWithPath: c.path).deletingLastPathComponent().path,
                               fileID: c.fileID, owners: owners, ageLimitDays: li.ageLimit, checkOpenFiles: true)
-            if c.key.kind == .name { i.ownerNames = [c.key.key, g.title] }
+            // S7 by name: the app's last-known name, and a folder's own name when it is named by app
+            var names = c.key.kind == .name ? [c.key.key] : []
+            if let n = g.appName { names.append(n) }
+            i.ownerNames = names
             i.inspect = true
             return i
         }

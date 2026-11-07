@@ -131,6 +131,7 @@ struct LeftoverGroup {
     let title: String              // last-known app name, or the ID
     let confidence: Confidence
     var sameVendor = false         // Low because an app of the same vendor is on this Mac
+    var appName: String? = nil     // the app's last-known name (used for the running-app check by name)
     let explanation: String
     let items: [LeftoverItem]
     var size: Int64 { items.reduce(0) { $0 + $1.candidate.size } }
@@ -177,8 +178,11 @@ enum LeftoverMatcher {
 
     /// Groups the candidates and decides which groups are reported. Every candidate should come
     /// from `screen` first; candidates it drops are ignored here too.
+    /// `kept` are keys of names the scan dropped because something installed claims them: a group
+    /// that one of them belongs to, or that belongs to one of them, may be read by that app, so it
+    /// is left out too (a helper still registered keeps its main app's data).
     static func decide(_ candidates: [LeftoverCandidate], ev: LeftoverEvidence, limits: AgeLimits,
-                       now: Date) -> LeftoverDecision {
+                       now: Date, kept: [String] = []) -> LeftoverDecision {
         var decision = LeftoverDecision()
         var screened: [(LeftoverCandidate, String, Bool)] = []   // candidate, group ID, low
         var names: [LeftoverCandidate] = []
@@ -218,11 +222,15 @@ enum LeftoverMatcher {
 
         var high: [String: (title: String, group: LeftoverGroup)] = [:]
         for (g, list) in members.sorted(by: { $0.key < $1.key }) {
+            let keys = list.map { $0.0.key.key.lowercased() } + [g]
+            if kept.contains(where: { k in keys.contains { BundleIDs.related(k, $0) } }) { continue }
             let vendorLow = list.contains { $0.1 }
             // Libraries inside other apps write settings under their own IDs too, so a group that is
             // only settings files can't be pinned on a removed app.
             let onlySettings = list.filter { $0.0.place.tier == .orphan }.allSatisfy { $0.0.place.id == "preferences" }
-            let low = vendorLow || onlySettings
+            // Its last-known name is an installed app's name: the app may live on under a new ID.
+            let renamed = list.compactMap { $0.0.bundleName }.contains { ev.nameKeys.contains(EvidenceName.key($0)) }
+            let low = vendorLow || onlySettings || renamed
             let limit = low ? limits.lowConfidence : limits.leftovers
             let cands = list.map(\.0)
             // 9.3 High (3), for the whole group: if any part of the app's data is recent or can't be
@@ -242,14 +250,16 @@ enum LeftoverMatcher {
             let title = bundleName ?? shown
             let vendor = BundleIDs.vendor(shown)
             let note = vendorLow ? "Another app from \(vendor) is on this Mac and may use it, so check it first."
+                : renamed ? "An app with the same name is on this Mac and may use it under a new ID, so check it first."
                 : onlySettings ? "Only a settings file was found. Libraries inside other apps write settings like this too, so check it first."
                 : nil
             let items = cands.sorted { $0.path < $1.path }.map { c in
                 item(c, reason: "\(c.place.noun) of \(bundleName.map { "\($0) (\(shown))" } ?? shown), an app not found on this Mac",
                      note: note, limit: limit, now: now)
             }
-            let group = LeftoverGroup(key: g, id: shown, title: title, confidence: low ? .low : .high, sameVendor: vendorLow,
+            let group = LeftoverGroup(key: g, id: shown, title: title, confidence: low ? .low : .high, sameVendor: vendorLow, appName: bundleName,
                                       explanation: vendorLow ? "\(shown) · same vendor as an app on this Mac"
+                                          : renamed ? "\(shown) · an app with this name is on this Mac"
                                           : onlySettings ? "\(shown) · settings file only" : "\(shown) · not found on this Mac",
                                       items: items)
             decision.groups.append(group)
@@ -262,6 +272,7 @@ enum LeftoverMatcher {
         for c in names {
             let n = EvidenceName.key(c.key.key)
             guard c.key.key.count >= 5, !ev.names.contains(LeftoverEvidence.normalize(c.key.key)),
+                  !ev.nameKeys.contains(n),
                   let h = high[n], c.doubt == nil, (ageDays(c, now) ?? -1) >= limits.lowConfidence else { continue }
             byGroup[h.group.key, default: []].append(c)
         }
@@ -273,7 +284,8 @@ enum LeftoverMatcher {
                      limit: limits.lowConfidence, now: now)
             }
             decision.groups.append(LeftoverGroup(key: "name:" + g, id: h.group.id, title: "Named like \(h.title)", confidence: .low,
-                                                 explanation: "named like \(h.title), which isn't on this Mac", items: items))
+                                                 appName: h.title, explanation: "named like \(h.title), which isn't on this Mac",
+                                                 items: items))
         }
         return decision
     }

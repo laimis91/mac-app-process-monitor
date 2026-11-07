@@ -699,6 +699,30 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         eq(run(short).groups.count, 1, "names under 5 characters are never matched")
         eq(run(app + [cand("appSupport", "GoneApp", days: 120)], evidence(names: ["GoneApp"])).groups.filter { $0.key.hasPrefix("name:") }.count, 0,
            "a name equal to an installed app's name is never matched")
+        // the installed-name check ignores hyphens and spaces the same way the evidence does
+        for (folder, installed) in [("Gone-App", "GoneApp"), ("Gone App", "Gone-App"), ("gone_app", "Gone App")] {
+            eq(run(app + [cand("appSupport", folder, days: 120)], evidence(names: [installed])).groups.filter { $0.key.hasPrefix("name:") }.count, 0,
+               "folder \(folder) with installed \(installed) is never matched")
+        }
+        // a group whose last-known name is an installed app's name is Low (renamed app)
+        let renamed = run(app, evidence(names: ["Gone App"]))
+        eq(renamed.groups.first?.confidence, .low, "last-known name of an installed app: Low")
+        check(renamed.groups.first?.items.first?.reason.contains("under a new ID") == true, "renamed reason")
+        // a member claimed by something installed keeps the whole group out
+        eq(LeftoverMatcher.decide(app, ev: evidence(), limits: lim, now: now, kept: ["com.gone.app.menu"]).groups.count, 0,
+           "installed helper keeps its main app's data")
+        eq(LeftoverMatcher.decide(app, ev: evidence(), limits: lim, now: now, kept: ["com.gone"]).groups.count, 0,
+           "installed parent ID keeps the group")
+        eq(LeftoverMatcher.decide(app, ev: evidence(), limits: lim, now: now, kept: ["com.gone.application"]).groups.count, 1,
+           "an unrelated ID doesn't")
+        // the running check by name uses the app's last-known name, compared loosely
+        let nameCat = named.groups.map(Leftovers.category).first { $0.id.hasPrefix("L:name:") }!
+        let inv0 = AppInventory(roots: Roots.fixture("/private/tmp/appmon-fixture-none")!, lookup: nil, running: { [] })
+        eq(inv0.runningOwner(nameCat.items[0].owners, names: nameCat.items[0].ownerNames,
+                             snapshot: [RunningApp(id: "com.newco.x", name: "Gone App")]), "Gone App", "name item blocked by its running app")
+        let highCat = Leftovers.category(d.groups[0])
+        eq(inv0.runningOwner(highCat.items[0].owners, names: highCat.items[0].ownerNames,
+                             snapshot: [RunningApp(id: "com.newco.x", name: "Gone App")]), "Gone App", "High item blocked by an app of its name")
         eq(run(app + [cand("logs", "GoneApp", days: 120)]).groups.filter { $0.key.hasPrefix("name:") }.first?.items.count, 1,
            "any orphan place can hold a name item")
         eq(run(app + [cand("groupContainers", "GoneApp", days: 120)]).groups.count, 1, "review-only places hold no name items")

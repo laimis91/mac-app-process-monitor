@@ -45,6 +45,12 @@ memory in plain terms.
   unchanged for six months are highlighted. Everything can be revealed in Finder. Items you pick
   one at a time can go to the Trash after a confirmation; everything in `~/Library`, apps, photo
   libraries, hidden folders and synced folders stay Reveal only.
+- **Leftovers** (Disk tab → Leftovers). Finds data left behind by apps you deleted by dragging
+  them to the Trash: settings, caches, app data, web data and logs, grouped per app. An item is
+  listed only if no check finds its app on this Mac (installed apps and their helpers, apps
+  LaunchServices or Spotlight know, launch jobs, plug-ins, running apps) and nothing of that app
+  changed for 30 days. Nothing is pre-selected; uncertain matches are kept apart under
+  "Possible leftovers". App containers are checked only with Full Disk Access.
 - Lightweight: uses about 1–3% of one CPU core.
 - Native SwiftUI, no dependencies, universal (Apple Silicon and Intel).
 

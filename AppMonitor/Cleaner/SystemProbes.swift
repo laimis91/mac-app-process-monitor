@@ -176,7 +176,11 @@ final class SpotlightProbe: @unchecked Sendable {
             working = known.map { Self.query([$0]) == .found } ?? false
         }
         guard working == true else { return .failed }
-        return Self.query(ids)
+        let answer = Self.query(ids)
+        // One timeout means Spotlight is stuck: every later question fails at once (S5) instead of
+        // waiting 5 seconds each and piling up blocked threads.
+        if answer == .failed { working = false }
+        return answer
     }
 
     /// IDs are used in the query only if they are plain bundle IDs; anything else is a failed probe.

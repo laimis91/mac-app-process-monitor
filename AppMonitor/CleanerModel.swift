@@ -196,7 +196,7 @@ final class CleanerModel: ObservableObject {
         var out: [String: Set<String>] = [:]
         for (_, i) in selectedPairs {
             for r in running where i.owners.contains(where: { BundleIDs.related(r.id, $0) })
-                || i.ownerNames.contains(where: { $0.caseInsensitiveCompare(r.name) == .orderedSame }) {
+                || i.ownerNames.contains(where: { EvidenceName.key($0) == EvidenceName.key(r.name) }) {
                 out[r.name, default: []].insert(r.id)
             }
         }

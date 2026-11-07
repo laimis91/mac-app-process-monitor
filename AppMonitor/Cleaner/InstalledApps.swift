@@ -105,7 +105,8 @@ final class AppInventory {
     func runningOwner(_ ids: [String], names: [String] = [], snapshot: [RunningApp]) -> String? {
         for r in snapshot {
             if ids.contains(where: { BundleIDs.related(r.id, $0) }) { return r.name }
-            if names.contains(where: { $0.caseInsensitiveCompare(r.name) == .orderedSame }) { return r.name }
+            // without case, spaces, dots and hyphens: a folder "GoneApp" matches a running "Gone App"
+            if names.contains(where: { !$0.isEmpty && EvidenceName.key($0) == EvidenceName.key(r.name) }) { return r.name }
         }
         return nil
     }
