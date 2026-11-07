@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Decisions made (section 14). Ready for phase 1. Not implemented. |
+| **Status** | Phase 1 shipped in 1.1.0. Phase 5 (stable signing) implemented; its Full Disk Access acceptance test is pending (section 11). Phases 2–4 not started. |
 | **Applies to** | App Monitor 1.x (SwiftUI, macOS 14+, not sandboxed) |
 | **Delivery** | Five phases, each shippable on its own (section 12) |
 
@@ -109,12 +109,16 @@ session; a small "Limited access" chip stays visible in the Disk header.
 
 ### 3.2 Signing dependency
 
-macOS stores an FDA grant against the app's code-signing designated requirement. The current
-ad-hoc signature's requirement is a build hash, so **every update loses the grant**. Phase 5
-(section 11) fixes this, and phase 3 depends on it to be truly useful.
+macOS stores an FDA grant against the app's code-signing designated requirement. An ad-hoc
+signature's requirement is a build hash, so with ad-hoc builds (1.1.0 and earlier, and local
+builds without a signing identity) **every update loses the grant**. Phase 5 (section 11) signs
+releases with one self-signed certificate, so the requirement names the bundle ID and that
+certificate and stays the same across builds. Phase 3 depends on it to be truly useful.
 
-Until then, the FDA banner SHOULD add: "If you just updated App Monitor, switch it off and on
-again in Full Disk Access."
+Until the section 11 acceptance test passes, and while ad-hoc builds are around, the FDA banner
+SHOULD keep: "If you just updated App Monitor, switch it off and on again in Full Disk Access."
+Updating from an ad-hoc build to the first signed one always needs this once, because the
+requirement changes.
 
 ### 3.3 Administrator rights
 
@@ -659,20 +663,52 @@ update.
 **Plan (decision D1):**
 
 1. Create a self-signed code-signing certificate, "App Monitor Signing", in the maintainer's
-   keychain. It is never committed to the repo.
+   keychain. It is never committed to the repo. *Done by* `scripts/make-signing-cert.sh`: it
+   makes an RSA-2048 certificate (10 years, extended key usage `codeSigning`) in a private
+   temporary folder, imports the key and certificate into the keychain with `codesign` access,
+   and optionally exports a password-protected `.p12` (outside the repo) for CI.
 2. `build.sh` signs with that identity when `APPMON_SIGN_IDENTITY` is set, and falls back to
    ad-hoc (`codesign -s -`) otherwise, so contributors can still build. A release build
-   (`APPMON_RELEASE=1`, used by the release script) fails if `APPMON_SIGN_IDENTITY` isn't set.
-3. Run the acceptance test below on macOS 14 and 15.
-4. If Full Disk Access does not survive an update, switch to an Apple Developer ID
+   (`APPMON_RELEASE=1`, used by the release workflow) fails if `APPMON_SIGN_IDENTITY` isn't set.
+   *Done.* A signed build also fails unless `codesign -d -r-` shows
+   `identifier "io.github.laimis91.appmonitor"` and a certificate, with no cdhash.
+   `APPMON_SIGN_KEYCHAIN` limits the identity search to one keychain.
+3. CI signing. *Done.* The release workflow reads the `.p12` (base64) and its password from the
+   repository secrets `APPMON_SIGN_P12` and `APPMON_SIGN_P12_PASSWORD`, imports them into a
+   temporary keychain with a random password, builds with `APPMON_RELEASE=1`, checks the
+   requirement, and deletes the keychain in an `always()` step. If either secret is missing the
+   workflow fails before building, so it never publishes an ad-hoc build.
+4. Run the acceptance test below on macOS 14 and 15. *Pending:* it needs a person to grant FDA.
+5. If Full Disk Access does not survive an update, switch to an Apple Developer ID
    (`--options runtime --timestamp` plus notarization) before phase 3 ships.
 
 Note: release builds must always be signed with the same certificate. Users who build from
-source sign with their own identity, or ad-hoc.
+source sign with their own identity, or ad-hoc. Gatekeeper still rejects a self-signed build
+(`spctl` reports "rejected"), so downloaded builds still need **Open Anyway** once.
 
 **Acceptance** for the chosen option: after granting FDA to build N, installing build N+1
 keeps FDA granted (checked with the section 3.1 detection), and `codesign -d -r-` shows a
 requirement based on identifier and certificate, not a cdhash.
+
+Requirement part, verified on macOS 27.2 with a test certificate:
+
+```
+ad-hoc:  designated => cdhash H"…"   (changes with every build)
+signed:  designated => identifier "io.github.laimis91.appmonitor" and certificate leaf = H"<certificate SHA-1>"
+         (identical for two builds with different versions and code)
+```
+
+Manual FDA part (pending):
+
+1. Build N and N+1 with the same identity, for example
+   `APPMON_VERSION=1.1.90 APPMON_OUT=/tmp/appmon-n/"App Monitor.app"` and `1.1.91` into
+   `/tmp/appmon-n1`. Quit any running App Monitor.
+2. Copy build N to `/Applications`, open it, open the Disk tab, then switch App Monitor on in
+   System Settings → Privacy & Security → Full Disk Access. The Disk header shows
+   "FULL DISK ACCESS".
+3. Quit it, replace it in `/Applications` with build N+1, open it and open the Disk tab.
+   Pass: the header still shows "FULL DISK ACCESS" and no banner, without touching System
+   Settings. Fail: "LIMITED ACCESS" and the "Full Disk Access is off" banner.
 
 ---
 
@@ -746,7 +782,9 @@ Decided by the project owner.
   - whether an FDA check adds the app to the Settings list,
   - how macOS 14+ reacts to reading other apps' containers without FDA.
 - Not verified:
-  - whether a self-signed certificate keeps FDA across builds,
+  - whether a self-signed certificate keeps FDA across builds. The designated requirement is
+    verified to stay the same (section 11); the FDA grant itself needs the manual test there,
+    on macOS 14 and 15 as well as the current release,
   - Steam cache locations,
   - old iOS update file locations,
   - Apple documentation for Xcode DerivedData and DeviceSupport (the rules follow Mole's

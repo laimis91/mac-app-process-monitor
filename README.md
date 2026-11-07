@@ -59,9 +59,17 @@ open "AppMonitor/App Monitor.app"
 
 Drag `App Monitor.app` into Applications to keep it.
 
+A plain build is ad-hoc signed, so macOS treats every rebuild as a new app and forgets Full Disk
+Access. To keep it, sign with your own certificate (see [Signing](#signing)):
+
+```bash
+APPMON_SIGN_IDENTITY="App Monitor Signing" ./AppMonitor/build.sh
+```
+
 ### Downloaded build
 
-Builds from the [Releases page](https://github.com/laimis91/mac-app-process-monitor/releases) are ad-hoc signed, not notarized by Apple, so macOS blocks them
+Builds from the [Releases page](https://github.com/laimis91/mac-app-process-monitor/releases)
+are signed with the project's own certificate but not notarized by Apple, so macOS blocks them
 the first time. Open the app once, then go to **System Settings → Privacy & Security** and
 click **Open Anyway**.
 
@@ -94,8 +102,10 @@ You can change this in **System Settings → Privacy & Security → Automation**
 
 The disk cleaner works without it, but skips folders macOS protects (app containers, Mail, the
 Trash) and marks them "Needs Full Disk Access". To include them, switch App Monitor on in
-**System Settings → Privacy & Security → Full Disk Access**. Builds are ad-hoc signed, so macOS
-forgets this permission after each update: switch it off and on again.
+**System Settings → Privacy & Security → Full Disk Access**. Releases after 1.1.0 are all signed
+with the same certificate, so macOS should keep this permission when you update. Updating from
+1.1.0 or earlier (ad-hoc signed), or running an ad-hoc build of your own: switch App Monitor off
+and on again after each update.
 
 ## Demo mode and screenshots
 
@@ -128,7 +138,7 @@ AppMonitor/
   Cleaner/          disk cleaner engine: rules, path guard, scanner, actions
   Icon/             app icon and the script that draws it
   build.sh          builds App Monitor.app
-scripts/            apptop.py, screenshot.sh, selftest.sh, fixture-test.sh
+scripts/            apptop.py, screenshot.sh, selftest.sh, fixture-test.sh, make-signing-cert.sh
 docs/               README screenshot, disk cleaner specification
 ```
 
@@ -142,15 +152,76 @@ scripts/fixture-test.sh   # scans and cleans a made-up folder tree (its tiny fak
 ## Releases
 
 Pushing a version tag builds the app on GitHub Actions and publishes it on the Releases page
-([`.github/workflows/release.yml`](.github/workflows/release.yml)). The workflow runs the
-self-test, builds a universal app with the tag's version, and uploads `AppMonitor-<version>.zip`.
+([`.github/workflows/release.yml`](.github/workflows/release.yml)). The workflow checks the
+signing secrets, runs the self-test, builds a signed universal app with the tag's version, checks
+the signature, and uploads `AppMonitor-<version>.zip`. If the signing secrets are missing it
+fails before building and publishes nothing.
 
 ```bash
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 Local builds use version 1.1.0 unless `APPMON_VERSION` is set.
+
+## Signing
+
+macOS remembers Full Disk Access by the app's *designated requirement*. An ad-hoc signature's
+requirement is a hash of that one build (`designated => cdhash H"…"`), so every update looks
+like a new app. A build signed with a certificate has a requirement that names the bundle ID and
+the certificate (`designated => identifier "io.github.laimis91.appmonitor" and certificate
+leaf = H"…"`), which stays the same as long as the same certificate signs every release.
+
+`build.sh` reads these variables:
+
+| Variable | Effect |
+|---|---|
+| `APPMON_SIGN_IDENTITY` | Sign with this keychain identity (name or SHA-1). Unset: ad-hoc. The build fails if the result has no identifier-and-certificate requirement. |
+| `APPMON_SIGN_KEYCHAIN` | Look for the identity only in this keychain. |
+| `APPMON_RELEASE=1` | Refuse to build without `APPMON_SIGN_IDENTITY`. The release workflow sets it. |
+
+Check a build with `codesign -d -r- "AppMonitor/App Monitor.app"`.
+
+### Create the certificate (maintainer, once)
+
+The release certificate is a self-signed code-signing certificate named "App Monitor Signing".
+It lives in the maintainer's keychain and in GitHub secrets, never in the repo. Create it once
+and keep it: a new certificate makes every user grant Full Disk Access again.
+
+```bash
+scripts/make-signing-cert.sh --p12 ~/Desktop/appmon-signing.p12
+```
+
+The script makes the certificate and key in a private temporary folder, adds them to your login
+keychain, and exports them to the `.p12` (it asks for a `.p12` password, at least 12
+characters, without echoing it; it refuses to write it inside any git checkout). macOS may ask for your
+login password. The first signed build may ask whether `codesign` can use the key: click
+**Always Allow**. `security find-identity -p codesigning` then lists it as
+`CSSMERR_TP_NOT_TRUSTED`; that is expected for a self-signed certificate and doesn't stop
+`codesign`.
+
+Contributors who build from source can make their own certificate the same way (without
+`--p12`), or stay ad-hoc.
+
+### GitHub secrets (maintainer, once)
+
+The release workflow needs two repository secrets:
+
+| Secret | Value |
+|---|---|
+| `APPMON_SIGN_P12` | The `.p12`, base64-encoded |
+| `APPMON_SIGN_P12_PASSWORD` | The `.p12` password |
+
+```bash
+base64 -i ~/Desktop/appmon-signing.p12 | gh secret set APPMON_SIGN_P12
+gh secret set APPMON_SIGN_P12_PASSWORD
+rm ~/Desktop/appmon-signing.p12
+```
+
+`gh secret set` without a value asks for it without echoing. You can also add both under
+**Settings → Secrets and variables → Actions**. The workflow imports the `.p12` into a temporary
+keychain with a random password, signs, and deletes the keychain at the end of the job. To export
+the `.p12` again later, use Keychain Access: **My Certificates → App Monitor Signing → Export**.
 
 ## License
 

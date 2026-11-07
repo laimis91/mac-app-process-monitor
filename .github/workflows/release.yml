@@ -1,5 +1,12 @@
 # Builds App Monitor and publishes it as a GitHub release when a version tag is pushed.
-#   git tag v1.1.0 && git push origin v1.1.0
+#   git tag v1.2.0 && git push origin v1.2.0
+#
+# Release builds are signed with the self-signed "App Monitor Signing" certificate, so macOS
+# keeps Full Disk Access across updates (docs/specs/disk-cleaner.md section 11). The workflow
+# needs two repository secrets (README, "Signing"):
+#   APPMON_SIGN_P12           the certificate and private key, as a base64-encoded .p12
+#   APPMON_SIGN_P12_PASSWORD  the .p12 password
+# Without them the workflow fails before building: it never publishes an ad-hoc build.
 name: Release
 
 on:
@@ -15,6 +22,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check signing secrets
+        env:
+          P12: ${{ secrets.APPMON_SIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.APPMON_SIGN_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::Signing secrets APPMON_SIGN_P12 and APPMON_SIGN_P12_PASSWORD are not set. See README, Signing. Nothing was published."
+            exit 1
+          fi
+
       - name: Read version from tag
         id: version
         run: |
@@ -28,10 +45,44 @@ jobs:
       - name: Logic self-test
         run: scripts/selftest.sh
 
+      - name: Import signing certificate into a temporary keychain
+        id: keychain
+        env:
+          P12: ${{ secrets.APPMON_SIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.APPMON_SIGN_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/appmon-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"   # random, lives only in this step
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/signing.p12"' EXIT
+          printf '%s' "$P12" | base64 -D > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -f pkcs12 \
+            -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+          # Let codesign use the key without a UI prompt.
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security find-identity -p codesigning "$KEYCHAIN" | grep -q '"App Monitor Signing"' || {
+            echo "::error::The .p12 in APPMON_SIGN_P12 has no \"App Monitor Signing\" identity."
+            exit 1
+          }
+          echo "path=$KEYCHAIN" >> "$GITHUB_OUTPUT"
+
       - name: Build universal app
         env:
           APPMON_VERSION: ${{ steps.version.outputs.version }}
+          APPMON_RELEASE: "1"
+          APPMON_SIGN_IDENTITY: App Monitor Signing
+          APPMON_SIGN_KEYCHAIN: ${{ steps.keychain.outputs.path }}
         run: AppMonitor/build.sh
+
+      - name: Delete temporary keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/appmon-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/signing.p12"
 
       - name: Check the build
         run: |
@@ -40,6 +91,13 @@ jobs:
           lipo -archs "$APP/Contents/MacOS/AppMonitor" | grep -q arm64
           /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$APP/Contents/Info.plist" \
             | grep -qx "${{ steps.version.outputs.version }}"
+          # signed with a certificate, not ad-hoc: a cdhash requirement would lose Full Disk Access
+          codesign --verify --strict "$APP"
+          REQ="$(codesign -d -r- "$APP" 2>&1)"
+          if [[ "$REQ" != *'designated => identifier "io.github.laimis91.appmonitor" and certificate leaf'* || "$REQ" == *cdhash* ]]; then
+            echo "::error::Release build has no stable designated requirement: $REQ"
+            exit 1
+          fi
           # developer-only switches must not be in a release build
           ! strings "$APP/Contents/MacOS/AppMonitor" | grep -qE 'APPMON_SCAN_ROOT|scan-json'
 
@@ -56,4 +114,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "AppMonitor-$VERSION.zip" \
             --title "App Monitor $VERSION" \
             --generate-notes \
-            --notes "Ad-hoc signed, not notarized: on first launch go to System Settings → Privacy & Security and click Open Anyway. After updating, switch App Monitor off and on again in Full Disk Access."
+            --notes "Signed with the project's own certificate, not notarized by Apple: on first launch go to System Settings → Privacy & Security and click Open Anyway. Updating from 1.1.0 or earlier (ad-hoc signed): switch App Monitor off and on again in Full Disk Access once."
