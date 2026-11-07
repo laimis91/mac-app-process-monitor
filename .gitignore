@@ -1,0 +1,11 @@
+# Build output
+AppMonitor/App Monitor.app/
+*.zip
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
