@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 FIX="$("$ROOT/scripts/make-fixtures.sh")"
 HOLDER=""
-cleanup() { [ -n "$HOLDER" ] && kill "$HOLDER" 2>/dev/null || true; chmod -R u+rwx "$FIX" 2>/dev/null; rm -rf "$WORK" "$FIX"; }
+cleanup() { rc=$?; [ -n "$HOLDER" ] && kill "$HOLDER" 2>/dev/null || true; chmod -R u+rwx "$FIX" 2>/dev/null; rm -rf "$WORK" "$FIX"; exit $rc; }
 trap cleanup EXIT
 
 APPMON_OUT="$WORK/Debug.app" APPMON_ARCHS="$(uname -m)" APPMON_DEBUG=1 "$ROOT/AppMonitor/build.sh" >/dev/null 2>&1

@@ -18,7 +18,7 @@ FLAGS=(-O)
 # APPMON_ARCHS limits the architectures (for quick local test builds).
 ARCHS=(${APPMON_ARCHS:-arm64 x86_64})
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT   # keep the failure code (bash 3.2 loses it otherwise)
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -27,7 +27,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 for ARCH in "${ARCHS[@]}"; do
-  echo "Compiling for $ARCH…"
+  echo "Compiling for ${ARCH}…"
   swiftc "${FLAGS[@]}" -parse-as-library -swift-version 5 -target "$ARCH-apple-macos14.0" \
     "${SOURCES[@]}" -o "$TMP/AppMonitor-$ARCH"
 done
