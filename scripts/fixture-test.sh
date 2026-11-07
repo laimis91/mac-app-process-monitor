@@ -102,4 +102,57 @@ listed = {i["path"] for c in json.load(open(sys.argv[2])) for i in c["items"]}
 assert not (moved & listed), moved & listed
 PY
 
+# 7. Space map (spec 8): sizes match du -kx, labels, Reveal-only items, one-item dry run and act
+run "$BIN" --space-json > "$WORK/space.json"
+python3 - "$WORK/space.json" "$FIX" <<'PY' && ok "space map: sizes match du -kx, labels and reasons" || bad "space map scan"
+import json, subprocess, sys
+fix = sys.argv[2]
+n = {x["path"]: x for x in json.load(open(sys.argv[1]))}
+for rel in ["home", "home/Projects", "home/Projects/site", "home/Library", "home/Downloads", "Applications"]:
+    du = int(subprocess.run(["du", "-skx", fix + "/" + rel], capture_output=True, text=True).stdout.split()[0])
+    assert n[rel]["kb"] == du, (rel, n[rel]["kb"], du)
+assert n["Applications/Fixture App.app"]["owner"] == "Fixture App"
+assert n["home/Library/Caches/com.fixture.running"]["owner"] == "Running App"      # named by bundle ID
+for ok_item in ["home/Projects/site", "home/Downloads/old.iso", "home/Documents/secret"]:
+    assert "reason" not in n[ok_item], (ok_item, n[ok_item])
+for kept in ["home", "home/Library", "home/Library/Caches/com.fixture.running", "home/Projects/site/.git",
+             "home/Projects/Tool.app", "home/Projects", "home/Pictures", "home/Pictures/Old.photoslibrary",
+             "home/Dropbox", "home/.config", "home/Documents", "Applications/Fixture App.app"]:
+    assert "reason" in n[kept], kept
+assert n["home/Projects"]["reason"].startswith("Contains an app"), n["home/Projects"]
+PY
+
+SPACE="home/Projects/site,home/Downloads/old.iso,home/Projects/held,home/Projects/site/.git,home/Library/Caches/com.fixture.running"
+before="$(snapshot)"
+APPMON_SELECT="$SPACE" run "$BIN" --space-trash > "$WORK/space-dry.json"
+[ "$before" = "$(snapshot)" ] && ok "space map dry run changed nothing" || bad "space map dry run changed the tree"
+python3 - "$WORK/space-dry.json" <<'PY' && ok "space map dry run plans only allowed items" || bad "space map dry run plan"
+import json, sys
+o = {x["path"]: x for x in json.load(open(sys.argv[1]))}
+for k in ["home/Projects/site", "home/Downloads/old.iso", "home/Projects/held"]:
+    assert o[k]["status"] == "planned", (k, o[k])
+for k in ["home/Projects/site/.git", "home/Library/Caches/com.fixture.running"]:
+    assert o[k]["status"] == "refused", (k, o[k])
+PY
+
+exec 3<"$FIX/home/Projects/held/x"
+sleep 300 <&3 & HOLDER=$!; disown "$HOLDER"
+exec 3<&-
+sleep 0.3
+APPMON_FIXTURE_ACT=1 APPMON_SELECT="$SPACE" run "$BIN" --space-trash > "$WORK/space-act.json"
+kill "$HOLDER" 2>/dev/null || true; HOLDER=""
+python3 - "$WORK/space-act.json" "$WORK/space.json" "$FIX" <<'PY' && ok "space map act: moved, open item skipped" || bad "space map act"
+import json, os, sys
+o = {x["path"]: x for x in json.load(open(sys.argv[1]))}
+scan = {x["path"]: x["kb"] for x in json.load(open(sys.argv[2]))}
+fix = sys.argv[3]
+for k in ["home/Projects/site", "home/Downloads/old.iso"]:
+    assert o[k]["status"] == "moved", (k, o[k])
+    assert o[k]["kb"] == scan[k], (k, o[k]["kb"], scan[k])
+    assert not os.path.lexists(os.path.join(fix, k)), k
+assert o["home/Projects/held"]["status"] == "skipped" and o["home/Projects/held"]["reason"].startswith("In use by"), o["home/Projects/held"]
+assert os.path.exists(os.path.join(fix, "home/Projects/held/x"))
+assert os.path.exists(os.path.join(fix, "home/Library/Caches/com.fixture.running"))
+PY
+
 [ "$fail" = 0 ] && echo "fixture-test: all passed" || { echo "fixture-test: FAILED"; exit 1; }

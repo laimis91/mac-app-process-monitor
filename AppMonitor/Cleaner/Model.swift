@@ -28,6 +28,7 @@ struct CleanItem: Identifiable, Codable {
     var note: String? = nil         // shown greyed, e.g. "Needs Full Disk Access"
     var sizeUnknown = false         // tool rows with nothing to measure
     var measurePath: String? = nil  // tool rows: the cache folder measured before and after
+    var spaceMap = false            // picked in the Space map: checked by the Space-map guard (6.4)
 
     var selectable: Bool { risk != .info && note == nil }
     /// S6: only Safe items moved to the Trash are pre-selected, never tool commands.

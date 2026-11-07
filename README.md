@@ -40,6 +40,11 @@ memory in plain terms.
   Homebrew, Docker). Every item says why it was found. Only items marked *Safe* are pre-selected,
   files go to the Trash through Finder, so Finder's **Put Back** restores them, and tool caches are cleared with the tool's own
   command, shown to you before it runs. Age limits are adjustable in Settings (⌘,).
+- **Space map** (Disk tab → Space map). Shows which folders in your home folder and Applications
+  take the most space, largest first, labelled with the app they belong to. Large folders
+  unchanged for six months are highlighted. Everything can be revealed in Finder. Items you pick
+  one at a time can go to the Trash after a confirmation; everything in `~/Library`, apps, photo
+  libraries, hidden folders and synced folders stay Reveal only.
 - Lightweight: uses about 1–3% of one CPU core.
 - Native SwiftUI, no dependencies, universal (Apple Silicon and Intel).
 
@@ -135,6 +140,7 @@ AppMonitor/
   Views.swift       UI and theme
   Demo.swift        demo mode and window capture
   CleanerModel.swift, CleanerViews.swift   Disk tab and Settings window
+  SpaceMapModel.swift, SpaceMapViews.swift Space map view
   Cleaner/          disk cleaner engine: rules, path guard, scanner, actions
   Icon/             app icon and the script that draws it
   build.sh          builds App Monitor.app
@@ -145,7 +151,7 @@ docs/               README screenshot, disk cleaner specification
 ## Tests
 
 ```bash
-scripts/selftest.sh       # disk cleaner logic: path guard, rules, key parsing, settings
+scripts/selftest.sh       # disk cleaner logic: path guards, rules, key parsing, settings, Space map
 scripts/fixture-test.sh   # scans and cleans a made-up folder tree (its tiny fake files go to your Trash)
 ```
 

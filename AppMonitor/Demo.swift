@@ -173,3 +173,84 @@ extension Demo {
         ]
     }
 }
+
+// MARK: - Space map demo (made up; shown as ~/… so no real user name appears)
+
+extension Demo {
+    /// A made-up Space map: the root and the home folder node.
+    static func spaceMap() -> (SpaceNode, SpaceNode) {
+        let now = Date().timeIntervalSince1970
+        var ino: UInt64 = 1
+        let gb = 1_073_741_824.0
+        func node(_ name: String, _ g: Double = 0, days: Double = 3, items: Int = 0, app: (String, String)? = nil,
+                  note: String? = nil, package: Bool = false, other: (Int, Double)? = nil, _ kids: [SpaceNode] = []) -> SpaceNode {
+            ino += 1
+            let n = SpaceNode(name: name, isDir: !kids.isEmpty || items > 0 || other != nil || note != nil, dev: 1, ino: ino)
+            n.size = Int64(g * gb)
+            n.newest = now - days * 86_400
+            n.items = items
+            if let (name, path) = app { n.owner = AppInfo(id: "demo." + name, name: name, path: path) }
+            n.note = note
+            if note != nil { n.flags.insert(.incomplete) }
+            if package { n.flags.insert(.package) }
+            if let (count, size) = other { n.otherCount = count; n.otherSize = Int64(size * gb); n.size += n.otherSize }
+            kids.forEach { n.attach($0) }
+            return n
+        }
+        let library = node("Library", 0.4, items: 12, [
+            node("Application Support", 0.2, items: 40, other: (61, 3.1), [
+                node("Photo Editor", 6.4, days: 2, items: 8_120, app: ("Photo Editor", "")),
+                node("com.example.musicplayer", 4.1, days: 1, items: 2_340, app: ("Music Player", "")),
+                node("GameLauncher", 2.7, days: 240, items: 15_400, app: ("Game Launcher", "")),
+            ]),
+            node("Developer", 0.1, items: 4, [
+                node("Xcode", 16.2, days: 1, items: 220_000),
+                node("CoreSimulator", 11.8, days: 6, items: 380_000),
+            ]),
+            node("Caches", 5.2, days: 0, items: 41_000),
+            node("Containers", note: "Needs Full Disk Access"),
+            node("Mail", 1.8, days: 0, items: 96_000),
+        ])
+        let home = node("Home folder", 0.01, items: 30, [
+            library,
+            node("Projects", 0.05, items: 6, [
+                node("ml-playground", 0.1, items: 3, [
+                    node("datasets", 18.6, days: 412, items: 1_204),
+                    node("checkpoints", 7.9, days: 196, items: 88),
+                    node("src", 0.02, days: 1, items: 310),
+                ]),
+                node("weather-api", 1.4, days: 2, items: 52_000),
+                node("portfolio-site", 0.9, days: 14, items: 61_000),
+            ]),
+            node("Movies", 0.01, items: 3, [
+                node("Holiday 2023.fcpbundle", 42.0, days: 590, items: 2_300, package: true),
+                node("Screen recordings", 3.6, days: 40, items: 64),
+            ]),
+            node("Downloads", 0.01, items: 140, other: (131, 1.2), [
+                node("Game Installer 3.2.dmg", 7.3, days: 380),
+                node("ubuntu-24.04-desktop-arm64.iso", 2.9, days: 221),
+                node("Course videos", 4.4, days: 30, items: 48),
+            ]),
+            node("Pictures", 0.01, items: 4, [
+                node("Photos Library.photoslibrary", 38.5, days: 0, items: 54_000, package: true),
+            ]),
+            node("Documents", 6.2, days: 1, items: 9_800),
+            node("Music", 3.1, days: 60, items: 2_200),
+            node(".docker", 12.4, days: 9, items: 3_100),
+        ])
+        home.base = NSHomeDirectory()
+        home.flags.insert(.shell)
+        let apps = node("Applications", 0, items: 0, [
+            node("Photo Editor.app", 3.2, days: 20, items: 9_000, app: ("Photo Editor", "")),
+            node("Game Launcher.app", 1.1, days: 300, items: 2_100, app: ("Game Launcher", "")),
+            node("Code Editor.app", 0.9, days: 5, items: 6_400, app: ("Code Editor", "")),
+            node("Music Player.app", 0.4, days: 12, items: 1_300, app: ("Music Player", "")),
+        ])
+        apps.base = "/Applications"
+        apps.flags.insert(.shell)
+        let root = SpaceNode.root()
+        root.attach(home)
+        root.attach(apps)
+        return (root, home)
+    }
+}

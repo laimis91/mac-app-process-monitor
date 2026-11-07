@@ -82,6 +82,17 @@ TOOL
   chmod +x "$ROOT/bin/$t"
 done
 
+# Space map (spec 8): user items outside ~/Library, and things it must never move
+file "$H/Projects/site/src/main.c" 204800             # a project folder: may be moved
+file "$H/Projects/site/.git/objects/pack" 102400      # a repo's .git: Reveal only
+ln "$H/Projects/site/src/main.c" "$H/Projects/site/hardlink.c"   # counted once
+file "$H/Projects/held/x" 4096                       # kept open during the Space-map act test
+file "$H/Projects/Tool.app/Contents/MacOS/tool" 8192  # an app in the home folder: Reveal only
+file "$H/Downloads/old.iso" 1048576                  # a large old download: may be moved
+file "$H/Pictures/Old.photoslibrary/database/x" 16384 # a photo library: Reveal only
+file "$H/Dropbox/shared.txt" 4096                    # a sync folder: Reveal only
+file "$H/.config/tool/settings" 4096                 # a home dot-folder: Reveal only
+
 # Dates: everything old, except the "new" items
 find "$ROOT" -exec touch -h -t "$OLD" {} +
 touch "$H/Library/Logs/Fresh/new.log" "$H/Library/Logs/Fresh" "$H/Library/Logs/DiagnosticReports/New.ips" \

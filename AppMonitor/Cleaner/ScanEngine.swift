@@ -33,6 +33,7 @@ struct Measure {
     var cancelled = false
     var special = false              // contains a socket or FIFO (may be in use without an open file)
     var locked = false               // contains a locked file (Finder would stop to ask about it)
+    var protected: String? = nil     // with `inspect`: the first always-protected thing inside (6.4)
 }
 
 enum ScanEngine {
@@ -48,9 +49,50 @@ enum ScanEngine {
         Date(timeIntervalSince1970: Double(st.st_mtimespec.tv_sec) + Double(st.st_mtimespec.tv_nsec) / 1e9)
     }
 
-    /// Measures a file or folder. `links` dedupes hard links across the whole scan.
-    static func measure(_ path: String, links: LinkSet?, cancel: CancelFlag? = nil) -> Measure {
+    /// Things that are always protected from the Space map (6.4, "No protected contents"): a
+    /// folder holding one of them can't be moved as a whole. Cloud-synced items are checked by
+    /// the Space-map guard on the item and its parents.
+    enum Protected: String {
+        case app = "Contains an app. Apps are removed with an uninstaller, not from the Space map."
+        case photos = "Contains a photo library"
+        case foreign = "Contains items owned by another user"
+        case mount = "Contains a mount point"
+        case cloud = "Contains items stored only in the cloud"
+        case synced = "Contains cloud-synced items. Remove them in Finder, because they would be deleted on every synced device."
+    }
+
+    /// Whether this entry is always protected. `name` is checked for folders only.
+    static func protectedKind(name: () -> String, _ st: stat, rootDev: Int32, uid: uid_t) -> Protected? {
+        if st.st_uid != uid { return .foreign }
+        if st.st_dev != rootDev { return .mount }
+        guard (st.st_mode & S_IFMT) == S_IFDIR else { return nil }
+        let n = name().lowercased()
+        if n.hasSuffix(".app") { return .app }
+        if n.hasSuffix(".photoslibrary") { return .photos }
+        return nil
+    }
+
+    /// The name of an fts entry (fts_name is a C flexible array member).
+    static func ftsName(_ e: UnsafeMutablePointer<FTSENT>) -> String {
+        let off = MemoryLayout<FTSENT>.offset(of: \FTSENT.fts_name)!
+        let p = (UnsafeRawPointer(e) + off).assumingMemoryBound(to: UInt8.self)
+        return String(decoding: UnsafeBufferPointer(start: p, count: Int(e.pointee.fts_namelen)), as: UTF8.self)
+    }
+
+    /// Measures a file or folder. `links` dedupes hard links across the whole scan. With
+    /// `inspect`, also looks for always-protected contents (Space-map items, 6.4): folders are
+    /// checked with `synced` for cloud sync, and nothing stored only in the cloud is downloaded
+    /// to look at it (S11).
+    static func measure(_ path: String, links: LinkSet?, cancel: CancelFlag? = nil, inspect: Bool = false,
+                        synced: ((String) -> Bool)? = nil) -> Measure {
         var m = Measure()
+        let prevPolicy = inspect ? getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD) : -1
+        if inspect {
+            _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
+        }
+        defer {
+            if prevPolicy >= 0 { _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, prevPolicy) }
+        }
         guard let id = fileID(path) else { m.complete = false; return m }
         m.fileID = id
         var newest: Date? = nil
@@ -61,6 +103,8 @@ enum ScanEngine {
             m.complete = false; return m
         }
         defer { fts_close(fts) }
+        let uid = getuid()
+        var rootDev: Int32? = nil
         while let e = fts_read(fts) {
             if m.entries & 1023 == 0, cancel?.isSet == true { m.cancelled = true; break }
             let info = Int32(e.pointee.fts_info)
@@ -75,6 +119,18 @@ enum ScanEngine {
             }
             guard let sp = e.pointee.fts_statp else { continue }
             let st = sp.pointee
+            if rootDev == nil { rootDev = st.st_dev }
+            if inspect, m.protected == nil,
+               let k = protectedKind(name: { ftsName(e) }, st, rootDev: rootDev!, uid: uid) {
+                m.protected = k.rawValue
+            }
+            if inspect, m.protected == nil {
+                if (st.st_flags & UInt32(SF_DATALESS)) != 0 {
+                    m.protected = Protected.cloud.rawValue
+                } else if (st.st_mode & S_IFMT) == S_IFDIR, let synced, synced(String(cString: e.pointee.fts_path)) {
+                    m.protected = Protected.synced.rawValue
+                }
+            }
             m.entries += 1
             if m.entries <= ageCap {
                 let t = mtime(st)

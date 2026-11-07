@@ -38,6 +38,7 @@ struct CheckBox: View {
 
 struct CleanerView: View {
     @EnvironmentObject var m: CleanerModel
+    @EnvironmentObject var space: SpaceMapModel
     @State private var expanded: Set<String> = []
     @State private var search = ""
     @State private var shown: [String: Int] = [:]   // items shown per expanded category
@@ -65,10 +66,19 @@ struct CleanerView: View {
 
             if m.fda != .granted && !m.bannerHidden { FDABanner().padding(.horizontal, 14).padding(.top, 12) }
 
-            toolbar.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
+            HStack(spacing: 12) {
+                Picker("", selection: $m.view) {
+                    ForEach(DiskView.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 170)
+                if m.view == .spaceMap { SpaceToolbar() } else { toolbar }
+            }
+            .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
 
             VStack(spacing: 0) {
-                if m.categories.isEmpty { emptyState } else {
+                if m.view == .spaceMap {
+                    SpaceMapView()
+                } else if m.categories.isEmpty { emptyState } else {
                     ScrollView { LazyVStack(spacing: 0) { results } }
                 }
             }
@@ -78,7 +88,10 @@ struct CleanerView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .padding(.horizontal, 14)
 
-            Text("Sizes are upper estimates: APFS clones and snapshots can make the real gain smaller  ·  Moved items stay in the Trash until you empty it\(m.dryRun ? "  ·  DRY RUN: nothing is changed" : "")")
+            Text((m.view == .spaceMap
+                  ? "Sizes are space used on disk, as du counts it  ·  Only items you pick one at a time can go to the Trash; everything in ~/Library is Reveal only"
+                  : "Sizes are upper estimates: APFS clones and snapshots can make the real gain smaller  ·  Moved items stay in the Trash until you empty it")
+                 + (m.dryRun ? "  ·  DRY RUN: nothing is changed" : ""))
                 .font(.caption2).foregroundStyle(m.dryRun ? Theme.yellow : Theme.faint)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 18).padding(.vertical, 8)
@@ -89,7 +102,7 @@ struct CleanerView: View {
             let env = ProcessInfo.processInfo.environment
             if CleanerConfig.fixtureRoot != nil {
                 if let e = env["APPMON_EXPAND"] { expanded = Set(e.split(separator: ",").map(String.init)) }
-                if env["APPMON_AUTOSCAN"] == "1" { m.scan() }
+                if env["APPMON_AUTOSCAN"] == "1" { m.view == .spaceMap ? space.scan(fda: m.fda) : m.scan() }
             }
             #endif
         }
