@@ -231,7 +231,9 @@ enum Cleaner {
 
             // Slow checks first: (d) age limit, readability and sockets, then (c) open files.
             do {
-                let m = ScanEngine.measure(item.path, links: nil, inspect: item.spaceMap, synced: env.spaceGuard?.isSynced)
+                let m = ScanEngine.measure(item.path, links: nil, inspect: item.spaceMap || item.inspect,
+                                           synced: item.spaceMap ? env.spaceGuard?.isSynced : nil,
+                                           strictApps: item.inspect && !item.spaceMap)
                 if let why = m.protected { skip(why); continue }
                 guard m.complete else { skip("Part of it can't be read"); continue }
                 guard !m.special else { skip("Contains a socket or pipe an app may be using"); continue }

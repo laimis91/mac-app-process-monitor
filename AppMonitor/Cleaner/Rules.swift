@@ -17,6 +17,8 @@ struct ScanContext {
     let cancel: CancelFlag
     let now: Date
     let uid = getuid()
+    /// Probe 2 for the leftovers finder (spec 9.2). No answer counts as installed (S5).
+    var spotlight: ([String]) -> SpotlightAnswer = { _ in .failed }
 
     func ignored(_ path: String) -> Bool { ignore.contains(path.lowercased()) }
 }

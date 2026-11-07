@@ -93,9 +93,62 @@ file "$H/Pictures/Old.photoslibrary/database/x" 16384 # a photo library: Reveal 
 file "$H/Dropbox/shared.txt" 4096                    # a sync folder: Reveal only
 file "$H/.config/tool/settings" 4096                 # a home dot-folder: Reveal only
 
+# Leftovers (spec 9). Every app here is made up.
+L="$H/Library"
+plist() {  # path, then key/value pairs
+  local f="$1"; shift; mkdir -p "$(dirname "$f")"
+  { echo '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+    while [ $# -gt 1 ]; do echo "<key>$1</key><string>$2</string>"; shift 2; done
+    echo '</dict></plist>'; } > "$f"
+}
+# An installed app's data, its embedded extension's data and a web-deployed app: never reported
+file "$L/Application Support/com.fixture.installed/db" 8192
+plist "$L/Preferences/com.fixture.installed.plist" CFBundleName "Fixture App"
+file "$L/Application Support/com.fixture.installed.share/x" 4096
+app "$L/Application Support/WebDeployed/Web Tool.app" com.fixture.webtool "Web Tool"
+file "$L/Application Support/WebDeployed/Web Tool.app/Contents/MacOS/webtool" 4096
+plist "$L/Preferences/com.fixture.webtool.plist" CFBundleName "Web Tool"
+# A removed app (Old Editor): one High group, with Review-only and Info items, and a folder named
+# like it (Possible). Its container and group container need Full Disk Access.
+for d in "Application Support" "HTTPStorages" "WebKit" "Application Scripts"; do file "$L/$d/org.oldvendor.editor/x" 16384; done
+file "$L/Caches/org.oldvendor.editor/x" 16384
+file "$L/Caches/org.oldvendor.editor.helper/x" 4096
+plist "$L/Preferences/org.oldvendor.editor.plist" CFBundleName "Old Editor"
+file "$L/Saved Application State/org.oldvendor.editor.savedState/windows.plist" 4096
+file "$L/Cookies/org.oldvendor.editor.binarycookies" 4096
+file "$L/Containers/org.oldvendor.editor/Data/x" 8192
+plist "$L/Containers/org.oldvendor.editor/.com.apple.containermanagerd.metadata.plist" MCMMetadataIdentifier org.oldvendor.editor
+file "$L/Group Containers/ABCDE12345.org.oldvendor.editor/x" 4096
+file "$ROOT/Library/Application Support/org.oldvendor.editor/x" 4096      # needs admin: Info
+file "$L/Application Support/Old Editor/notes" 4096                       # named like it: Possible
+# A removed app whose settings changed recently: not reported
+file "$L/Caches/org.newvendor.tool/x" 4096
+plist "$L/Preferences/org.newvendor.tool.plist" CFBundleName "New Tool"
+# Found only by Spotlight, by a launchd label, or as a plug-in: not reported
+file "$L/Application Support/org.spotvendor.app/x" 4096
+echo "org.spotvendor.app" > "$ROOT/spotlight.txt"
+file "$L/Application Support/org.labelvendor.app/x" 4096
+plist "$ROOT/Library/LaunchDaemons/org.labelvendor.app.helper.plist" Label org.labelvendor.app.helper
+plist "$L/PreferencePanes/Pane.prefPane/Contents/Info.plist" CFBundleIdentifier org.panevendor.pane CFBundleName Pane
+plist "$L/Preferences/org.panevendor.pane.plist" CFBundleName Pane
+# Named like an installed app, protected names, plain names without evidence, a running app's data
+file "$L/Application Support/org.clashvendor.runningapp/x" 4096           # "Running App" is installed
+file "$L/Application Support/com.apple.fixture/x" 4096
+file "$L/Application Support/com.google.fixture/x" 4096
+file "$L/Application Support/1Password/x" 4096
+file "$L/Application Support/PlainName/x" 4096
+file "$L/Application Support/com.fixture.daemononly/x" 4096              # running, not in Applications
+printf 'com.fixture.daemononly|Daemon Only\n' >> "$ROOT/running.txt"
+# A container whose metadata names another app: left out of its group
+file "$L/Application Support/org.mismatch.app/x" 4096
+file "$L/Containers/org.mismatch.app/Data/x" 4096
+plist "$L/Containers/org.mismatch.app/.com.apple.containermanagerd.metadata.plist" MCMMetadataIdentifier org.other.app
+# The same vendor as an installed app: Possible (com.fixture.gone's cache and logs are above)
+file "$L/Application Support/com.fixture.gone/x" 4096
+
 # Dates: everything old, except the "new" items
 find "$ROOT" -exec touch -h -t "$OLD" {} +
 touch "$H/Library/Logs/Fresh/new.log" "$H/Library/Logs/Fresh" "$H/Library/Logs/DiagnosticReports/New.ips" \
-      "$ROOT/tmp/new-item/x" "$ROOT/tmp/new-item"
+      "$ROOT/tmp/new-item/x" "$ROOT/tmp/new-item" "$L/Preferences/org.newvendor.tool.plist"
 chmod 000 "$C/com.fixture.locked/closed"
 echo "$ROOT"

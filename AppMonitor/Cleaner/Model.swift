@@ -5,7 +5,10 @@ import Foundation
 
 enum Risk: String, Codable { case safe = "Safe", review = "Review", requested = "Requested", info = "Info" }
 enum Method: String, Codable { case trash, tool, none }
-enum CategoryGroup: String, Codable { case general = "General", developer = "Developer" }
+enum CategoryGroup: String, Codable {
+    case general = "General", developer = "Developer"
+    case leftovers = "Leftovers", possible = "Possible leftovers, check before removing"
+}
 enum FDAStatus: String, Codable { case granted, denied, unknown }
 
 /// One thing the user can clean, or a row shown for information.
@@ -29,6 +32,7 @@ struct CleanItem: Identifiable, Codable {
     var sizeUnknown = false         // tool rows with nothing to measure
     var measurePath: String? = nil  // tool rows: the cache folder measured before and after
     var spaceMap = false            // picked in the Space map: checked by the Space-map guard (6.4)
+    var inspect = false             // re-checked for always-protected contents (an app inside, …) when cleaned
 
     var selectable: Bool { risk != .info && note == nil }
     /// S6: only Safe items moved to the Trash are pre-selected, never tool commands.

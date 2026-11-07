@@ -60,8 +60,23 @@ enum CleanerConfig {
     static func context(limits: AgeLimits, ignore: [String], cancel: CancelFlag) -> ScanContext {
         let r = roots
         let inv = inventory(r)
-        return ScanContext(roots: r, limits: limits, fda: fda(r), ignore: Set(ignore.map { $0.lowercased() }),
-                           inventory: inv, running: inv.running(), tools: tools(r), cancel: cancel, now: Date())
+        var ctx = ScanContext(roots: r, limits: limits, fda: fda(r), ignore: Set(ignore.map { $0.lowercased() }),
+                              inventory: inv, running: inv.running(), tools: tools(r), cancel: cancel, now: Date())
+        ctx.spotlight = spotlight(inv)
+        return ctx
+    }
+
+    /// Probe 2 (spec 9.2). In fixture mode Spotlight isn't asked: `<root>/spotlight.txt` lists the
+    /// IDs it "finds", and APPMON_FIXTURE_SPOTLIGHT=fail makes every question go unanswered.
+    static func spotlight(_ inv: AppInventory) -> ([String]) -> SpotlightAnswer {
+        if let root = fixtureRoot {
+            if env["APPMON_FIXTURE_SPOTLIGHT"] == "fail" { return { _ in .failed } }
+            let found = Set(((try? String(contentsOfFile: root + "/spotlight.txt", encoding: .utf8)) ?? "")
+                .split(separator: "\n").map { $0.lowercased() })
+            return { ids in ids.contains { found.contains($0.lowercased()) } ? .found : .notFound }
+        }
+        let probe = SpotlightProbe(inventory: inv)
+        return { ids in probe.ask(ids) }
     }
 
     static func cleanEnvironment(_ ctx: ScanContext) -> CleanEnvironment {
@@ -140,4 +155,60 @@ enum FinderTrash {
         }
     }
 
+}
+
+/// Spotlight lookups by bundle ID (probe 2), with a 5-second limit per question. Before the first
+/// question, Spotlight must find an app the folder scan already found; if it doesn't (indexing
+/// off, still building), every answer is "failed", which counts as installed (S5).
+final class SpotlightProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var working: Bool?
+    private let known: String?
+
+    init(inventory: AppInventory) {
+        let apps = inventory.apps.values.sorted { $0.path < $1.path }
+        known = (apps.first { $0.path.hasPrefix("/System/Applications/") } ?? apps.first)?.id
+    }
+
+    func ask(_ ids: [String]) -> SpotlightAnswer {
+        lock.lock(); defer { lock.unlock() }
+        if working == nil {
+            working = known.map { Self.query([$0]) == .found } ?? false
+        }
+        guard working == true else { return .failed }
+        // An ID that can't go into a query fails only its own group.
+        guard Self.valid(ids) else { return .failed }
+        let answer = Self.query(ids)
+        // A timeout or a failed query means Spotlight is stuck: every later question fails at once
+        // (S5) instead of waiting 5 seconds each and piling up blocked threads.
+        if answer == .failed { working = false }
+        return answer
+    }
+
+    /// IDs are used in the query only if they are plain bundle IDs; anything else is a failed probe.
+    static let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+    static func valid(_ ids: [String]) -> Bool {
+        !ids.isEmpty && ids.allSatisfy { !$0.isEmpty && $0.allSatisfy(allowed.contains) }
+    }
+
+    static func query(_ ids: [String], timeout: TimeInterval = 5) -> SpotlightAnswer {
+        guard valid(ids) else { return .failed }
+        let text = ids.map { "kMDItemCFBundleIdentifier == \"\($0)\"c" }.joined(separator: " || ")
+        guard let q = MDQueryCreate(kCFAllocatorDefault, text as CFString, nil, nil) else { return .failed }
+        final class Box: @unchecked Sendable { var ok = false; var count = 0 }
+        let box = Box()
+        let done = DispatchSemaphore(value: 0)
+        let query = q
+        DispatchQueue.global(qos: .utility).async {
+            box.ok = MDQueryExecute(query, CFOptionFlags(kMDQuerySynchronous.rawValue))
+            box.count = box.ok ? MDQueryGetResultCount(query) : 0
+            done.signal()
+        }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            MDQueryStop(q)
+            return .failed
+        }
+        guard box.ok else { return .failed }
+        return box.count > 0 ? .found : .notFound
+    }
 }

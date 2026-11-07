@@ -254,3 +254,41 @@ extension Demo {
         return (root, home)
     }
 }
+
+// MARK: - Leftovers demo (made up)
+
+extension Demo {
+    static func leftoverCategories() -> [Category] {
+        let h = NSHomeDirectory()
+        let now = Date()
+        func item(_ rel: String, _ mb: Double, age: Double, limit: Int = 30, _ reason: String) -> CleanItem {
+            CleanItem(path: h + "/" + rel, name: (rel as NSString).lastPathComponent, size: Int64(mb * 1_048_576),
+                      newest: now.addingTimeInterval(-age * 86_400), risk: .review, method: .trash, reason: reason,
+                      allowRoot: "", fileID: [], ageLimitDays: limit)
+        }
+        func gone(_ noun: String, _ app: String, _ id: String, _ d: Int) -> String {
+            "\(noun) of \(app) (\(id)), an app not found on this Mac, unchanged for \(d) days, limit 30."
+        }
+        return [
+            Category(id: "L:com.example.videostudio", title: "Video Studio", group: .leftovers, method: .trash,
+                     explanation: "com.example.videostudio · not found on this Mac", items: [
+                item("Library/Application Support/com.example.videostudio", 2860, age: 212, gone("App data", "Video Studio", "com.example.videostudio", 212)),
+                item("Library/Caches/com.example.videostudio", 940, age: 212, gone("Cache", "Video Studio", "com.example.videostudio", 212)),
+                item("Library/Preferences/com.example.videostudio.plist", 0.02, age: 214, gone("Settings file", "Video Studio", "com.example.videostudio", 214)),
+                item("Library/HTTPStorages/com.example.videostudio", 0.4, age: 212, gone("Web storage", "Video Studio", "com.example.videostudio", 212)),
+            ]),
+            Category(id: "L:org.sample.mapviewer", title: "org.sample.mapviewer", group: .leftovers, method: .trash,
+                     explanation: "org.sample.mapviewer · not found on this Mac", items: [
+                item("Library/Caches/org.sample.mapviewer", 315, age: 96, gone("Cache", "org.sample.mapviewer", "org.sample.mapviewer", 96).replacingOccurrences(of: "org.sample.mapviewer (org.sample.mapviewer)", with: "org.sample.mapviewer")),
+                item("Library/Logs/org.sample.mapviewer", 12, age: 96, gone("Logs", "org.sample.mapviewer", "org.sample.mapviewer", 96).replacingOccurrences(of: "org.sample.mapviewer (org.sample.mapviewer)", with: "org.sample.mapviewer")),
+            ]),
+            Category(id: "L:com.example.oldsync", title: "com.example.oldsync", group: .possible, method: .trash,
+                     explanation: "com.example.oldsync · same vendor as an installed app", items: [
+                item("Library/Application Support/com.example.oldsync", 128, age: 402, limit: 90, "App data of com.example.oldsync, an app not found on this Mac, unchanged for 402 days, limit 90. Another app from com.example is on this Mac and may use it, so check it first."),
+            ]),
+            Category(id: Leftovers.fdaID, title: "App containers and shared app data", group: .leftovers, method: .none,
+                     explanation: "Leftovers in Library/Containers, Library/Group Containers are checked only with Full Disk Access.",
+                     items: [], notice: "Needs Full Disk Access"),
+        ]
+    }
+}

@@ -3,12 +3,23 @@
 import SwiftUI
 import AppKit
 
-/// The Disk tab's views (spec 4.2). Leftovers arrive in phase 3.
-enum DiskView: String, CaseIterable { case junk = "Junk", spaceMap = "Space map" }
+/// The Disk tab's views (spec 4.2).
+enum DiskView: String, CaseIterable { case junk = "Junk", leftovers = "Leftovers", spaceMap = "Space map" }
 
+/// What a results list holds: junk rules (spec 7) or the leftovers finder (spec 9).
+enum CleanerKind { case junk, leftovers }
+
+/// One results list with its own scan, selection and clean. The junk model owns the settings and
+/// the ignore list and holds the leftovers model as `leftovers`; both use the same row views.
 @MainActor
 final class CleanerModel: ObservableObject {
-    @Published var view: DiskView = ProcessInfo.processInfo.environment["APPMON_DISKVIEW"] == "space" ? .spaceMap : .junk
+    @Published var view: DiskView = {
+        switch ProcessInfo.processInfo.environment["APPMON_DISKVIEW"] {
+        case "space": return .spaceMap
+        case "leftovers": return .leftovers
+        default: return .junk
+        }
+    }()
     @Published var categories: [Category] = []
     @Published var scanning = false
     @Published var progress = ""
@@ -22,13 +33,28 @@ final class CleanerModel: ObservableObject {
     @Published var lastRunWasDry = false
     @Published private(set) var limits: AgeLimits
     @Published private(set) var ignore: [String]
+    // List state, kept here so it survives switching views
+    @Published var search = ""
+    @Published var expanded: Set<String> = []
+    @Published var shown: [String: Int] = [:]
+    @Published var possibleOpen = false
+
+    let kind: CleanerKind
+    private weak var owner: CleanerModel?          // the junk model, for the leftovers model
+    /// The leftovers list (junk model only).
+    private(set) lazy var leftovers: CleanerModel = CleanerModel(kind: .leftovers, owner: self)
+    private var root: CleanerModel { owner ?? self }
+    /// The age limits the next scan uses (the junk model's settings).
+    var limitsInUse: AgeLimits { root.limits }
 
     private var cancel: CancelFlag?
     private var context: ScanContext?
     let dryRun = CleanerConfig.dryRun
     private let defaults = UserDefaults.standard
 
-    init() {
+    init(kind: CleanerKind = .junk, owner: CleanerModel? = nil) {
+        self.kind = kind
+        self.owner = owner
         var stored: [AgeField: Int] = [:]
         for f in AgeField.allCases where defaults.object(forKey: "age." + f.rawValue) != nil {
             stored[f] = defaults.integer(forKey: "age." + f.rawValue)
@@ -37,7 +63,7 @@ final class CleanerModel: ObservableObject {
         ignore = defaults.stringArray(forKey: "ignoredItems") ?? []
         saveLimits()
         if demoMode {
-            categories = Demo.diskCategories()
+            categories = kind == .junk ? Demo.diskCategories() : Demo.leftoverCategories()
             selected = Set(categories.flatMap(\.items).filter(\.preselected).map(\.id))
             fda = .denied
             lastScan = Date()
@@ -71,7 +97,7 @@ final class CleanerModel: ObservableObject {
 
     func scan() {
         guard !scanning, !cleaning else { return }
-        if demoMode { categories = Demo.diskCategories(); lastScan = Date(); return }
+        if demoMode { categories = kind == .junk ? Demo.diskCategories() : Demo.leftoverCategories(); lastScan = Date(); return }
         refreshFDA()
         let flag = CancelFlag()
         cancel = flag
@@ -79,10 +105,21 @@ final class CleanerModel: ObservableObject {
         categories = []
         selected = []
         progress = "Starting…"
-        let limits = self.limits, ignore = self.ignore
+        let limits = root.limits, ignore = root.ignore
+        let kind = self.kind
         Task.detached(priority: .utility) { [self] in
             let ctx = CleanerConfig.context(limits: limits, ignore: ignore, cancel: flag)
             await MainActor.run { self.context = ctx }
+            if kind == .leftovers {
+                let result = Leftovers.scan(ctx) { text in Task { @MainActor in self.progress = text } }
+                await MainActor.run {
+                    if !flag.isSet { self.categories = result.categories }
+                    self.scanning = false
+                    self.progress = flag.isSet ? "Stopped" : ""
+                    self.lastScan = Date()
+                }
+                return
+            }
             Rules.scan(ctx, progress: { id in
                 Task { @MainActor in self.progress = Self.progressText(id) }
             }, found: { c in
@@ -159,7 +196,7 @@ final class CleanerModel: ObservableObject {
         var out: [String: Set<String>] = [:]
         for (_, i) in selectedPairs {
             for r in running where i.owners.contains(where: { BundleIDs.related(r.id, $0) })
-                || i.ownerNames.contains(where: { $0.caseInsensitiveCompare(r.name) == .orderedSame }) {
+                || i.ownerNames.contains(where: { EvidenceName.key($0) == EvidenceName.key(r.name) }) {
                 out[r.name, default: []].insert(r.id)
             }
         }
@@ -189,11 +226,8 @@ final class CleanerModel: ObservableObject {
             }
             await MainActor.run {
                 let done = Set(result.filter { $0.status == .moved || $0.status == .ran }.map(\.path))
-                for i in self.categories.indices {
-                    if self.categories[i].method == .trash { self.categories[i].items.removeAll { done.contains($0.path) } }
-                }
-                self.categories.removeAll { $0.items.isEmpty && $0.notice == nil }
-                self.selected.subtract(done)
+                // Both lists can show the same folder (a cache of a removed app), so both drop it.
+                for list in [self.root, self.root.leftovers] { list.removeMoved(done) }
                 self.lastRunWasDry = env.dryRun
                 self.outcomes = result
                 self.cleaning = false
@@ -202,14 +236,26 @@ final class CleanerModel: ObservableObject {
         }
     }
 
-    // MARK: Ignore list and settings
+    private func removeMoved(_ done: Set<String>) {
+        for i in categories.indices {
+            if categories[i].method == .trash { categories[i].items.removeAll { done.contains($0.path) } }
+        }
+        categories.removeAll { $0.items.isEmpty && $0.notice == nil }
+        selected.subtract(done)
+    }
+
+    // MARK: Ignore list and settings (stored by the junk model, shared by both lists)
 
     func ignoreItem(_ item: CleanItem) {
-        guard !ignore.contains(where: { $0.caseInsensitiveCompare(item.path) == .orderedSame }) else { return }
-        ignore.append(item.path)
-        defaults.set(ignore, forKey: "ignoredItems")
-        selected.remove(item.id)
-        for i in categories.indices { categories[i].items.removeAll { $0.id == item.id } }
+        let r = root
+        guard !r.ignore.contains(where: { $0.caseInsensitiveCompare(item.path) == .orderedSame }) else { return }
+        r.ignore.append(item.path)
+        r.defaults.set(r.ignore, forKey: "ignoredItems")
+        for list in [r, r.leftovers] {
+            list.selected.remove(item.id)
+            for i in list.categories.indices { list.categories[i].items.removeAll { $0.id == item.id } }
+            list.categories.removeAll { $0.items.isEmpty && $0.notice == nil }
+        }
     }
 
     func unignore(_ path: String) {

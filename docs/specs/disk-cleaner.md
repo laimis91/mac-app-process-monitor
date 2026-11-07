@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Phase 1 shipped in 1.1.0. Phase 5 (stable signing) implemented; its Full Disk Access acceptance test is pending (section 11). Phases 2–4 not started. |
+| **Status** | Phase 1 shipped in 1.1.0. Phase 2 (Space map) and phase 3 (Leftovers finder, section 9.5) implemented. Phase 5 (stable signing) implemented; its Full Disk Access acceptance test is pending (section 11). Phase 4 not started. |
 | **Applies to** | App Monitor 1.x (SwiftUI, macOS 14+, not sandboxed) |
 | **Delivery** | Five phases, each shippable on its own (section 12) |
 
@@ -229,6 +229,7 @@ A Settings window (App menu → Settings…, ⌘,) with:
 | `Cleaner/Rules.swift` | Declarative category and rule definitions: id, paths, risk, age limits, owner hints, command |
 | `Cleaner/InstalledApps.swift` | Installed and running app inventory and bundle-ID key parsing (section 9.2). Delivered in phase 1, because S7 needs it |
 | `Cleaner/LeftoverMatcher.swift` | Matches folders to apps; orphan decision (phase 3) |
+| `Cleaner/Leftovers.swift` | Leftovers disk side: listing, measuring, extra probes, categories (phase 3) |
 | `Cleaner/Actions.swift` | Trash mover, tool-command runner, path guard |
 | `Cleaner/Permissions.swift` | FDA detection and the Settings link |
 | `Cleaner/SpaceMap.swift` | Space map tree, scanner and Space-map guard (phase 2, section 8.1) |
@@ -443,7 +444,7 @@ in under 200 ms from cached data.
 
 - `Cleaner/SpaceMap.swift` (AppKit-free): the tree (`SpaceNode`), the scanner and the
   Space-map guard. `SpaceMapModel.swift` and `SpaceMapViews.swift` hold the Disk tab's
-  **Space map** view, chosen with the **Junk | Space map** switch in the toolbar.
+  **Space map** view, chosen with the **Junk | Leftovers | Space map** switch in the toolbar.
 - **Scan.** One `fts` walk per folder (`FTS_PHYSICAL | FTS_XDEV`), up to 4 folders at a time:
   each child of the home folder and of `~/Library`, and `/Applications`. Sizes are allocated
   blocks of every entry, folders included, with hard links counted once per scan, so they equal
@@ -631,6 +632,78 @@ the key.
 
 ---
 
+### 9.5 Implementation (phase 3)
+
+- **Files.** `Cleaner/LeftoverMatcher.swift` (AppKit-free): the places of 9.1, the installed-app
+  evidence, `screen` (cheap checks on a name, before anything is measured) and `decide`
+  (grouping, ages, Spotlight, name evidence). `Cleaner/Leftovers.swift`: listing and measuring,
+  probes 5 and 7, apps nested in Application Support, and the Disk-tab categories. Probe 2
+  (Spotlight) is `SpotlightProbe` in `SystemProbes.swift`.
+- **UI.** Disk tab → **Junk | Leftovers | Space map**. The Leftovers list is a second
+  `CleanerModel` (kind `.leftovers`) owned by the junk model, so it reuses the rows, the
+  confirmation and result sheets and `Cleaner.clean`; settings and the ignore list are the junk
+  model's. A clean in either list removes the moved paths from both. High groups are listed
+  under **Leftovers**, Low groups under a collapsed **Possible leftovers, check before removing**
+  header. Info rows (needs admin, can't be moved by the user) are shown but can't be selected.
+- **Spotlight.** One `MDQuery` per group, asking for every ID of the group and their dot-prefixes,
+  limited to 5 seconds. Before the first question Spotlight must find an app the folder scan
+  found (one in `/System/Applications`); if it doesn't, every answer is "failed". A failed or
+  timed-out answer keeps the group out and adds a "Not confirmed by Spotlight" row (9.4: 6).
+- **Clean-time checks.** Leftover items re-check, besides S13: the contents (an app bundle,
+  another user's item, a mount point or cloud-only data put inside since the scan stops it),
+  open files (S13c, for every leftover, not only caches) and the age limit.
+- **Changes from 9.1–9.3, all towards keeping more:**
+  - The age limit applies to the whole group: if any item of the app (in any place, including
+    Review-only and Info places) changed recently or can't be read, or holds an app, a socket or
+    pipe, the whole group is left out. One recent settings file means the app may still be in use.
+  - Review-only and Info places (9.1) never start a group; they only join a group found in the
+    orphan places. A group ID that dot-prefix-belongs to a shorter one joins it
+    (`com.vendor.app.ShipIt` → `com.vendor.app`), not only the helper suffixes.
+  - An installed app whose ID starts with the candidate (`com.vendor.app.pro` for
+    `com.vendor.app`) counts as installed, instead of only making the candidate Low.
+    LaunchServices is also asked for every shorter dot-prefix of the ID.
+  - Probe 5 counts a label that starts with the ID (plain prefix) or that the ID belongs to.
+    Consequence: a leftover launch agent keeps its whole app out, so `~/Library/LaunchAgents`
+    items are rarely listed. Accepted: a launch job is evidence something is installed.
+  - Apps found inside `~/Library/Application Support` and `/Library/Application Support` (up to
+    4 levels, for example updaters and web-deployed apps) count as installed, with their
+    embedded bundles. Names of command-line tools (Homebrew, `~/.local/bin` and similar, and
+    Homebrew casks) count as installed names for High (5), so data such as
+    `org.carthage.CarthageKit` isn't taken for an app's.
+  - High (5) also ignores hyphens and underscores: an installed "OrcaSlicer" keeps
+    `com.vendor.orca-slicer`. Found on a real Mac, where an installed app's old ID differed only so.
+  - Groups whose only orphan-place items are settings files are Low: libraries inside apps
+    (analytics, purchase and crash SDKs) write settings domains under their own IDs. Found on a
+    real Mac. The protection list also gains those library namespaces (`com.revenuecat.*`,
+    `com.segment.*`, `io.sentry.*`, `org.sparkle-project.*`, `com.electron.*` and others), and
+    `is.workflow.*` (Shortcuts). Like the rest of the list, they also keep J-CACHE from listing
+    those caches.
+  - Group Containers, like Containers, are entered only with Full Disk Access (macOS asks the
+    user about other apps' data instead of failing). Without it one "Needs Full Disk Access" row
+    covers both.
+  - A folder named "….app" counts as an app only if it has `Contents/Info.plist` or
+    `Contents/MacOS`, so data folders named `com.vendor.app` are not mistaken for apps (the
+    Space map keeps its stricter rule).
+  - Same-vendor (Low) items also list the vendor prefix as an owner, so any running app of that
+    vendor blocks them (S7). Name-evidence groups are titled "Named like <App>".
+  - If any name of an app's data is kept because something installed claims it (a helper still
+    registered, for example), the rest of that app's group is left out too.
+  - A group whose last-known name (`CFBundleName`) is an installed app's name is Low: the app may
+    live on under a new bundle ID.
+  - Name comparisons for Low evidence, for "nothing installed has this name" and for the
+    running-app check by name all ignore case, spaces, dots, hyphens and underscores. Leftover
+    items carry the app's last-known name, so a running app of that name blocks them (S7).
+  - After one Spotlight question fails or times out, every later one fails at once (counts as
+    installed), and Stop ends the Spotlight step.
+- **Name evidence.** `CFBundleName` is read from leftover settings files and from
+  `<id>.savedState/Info.plist`. On the macOS 27 Mac tested, no settings file had one, so name
+  (Low) items are rare in practice. That is by design (D7).
+- **Measured** on a developer Mac without Full Disk Access (dry run): about 0.4 s; 12 groups
+  (8 High, 4 Low), 16 items, about 10 MB; none pre-selected, and no High group belonged to an
+  installed app (checked against Spotlight and `/Applications`). Known residual risk, as 9.2
+  says: games kept on an unplugged drive (for example a Steam library) look removed, and their
+  save data is listed (Review) under the game's ID.
+
 ## 10. Phase 4: Uninstaller
 
 The uninstaller has its **own matching rules**. The leftover rules don't apply, because "belongs
@@ -792,6 +865,15 @@ The repo has no automated tests today.
   skip, an app started between scan and clean (S13), Put Back behaviour on macOS 14 and 15,
   missing tools and missing Command Line Tools.
 - **Demo mode** gains made-up Disk results, so README screenshots never show real paths.
+- **Leftovers** (phase 3): `scripts/selftest.sh` checks every match and no-match rule of 9.3
+  (installed, helper and base IDs, protection, App Monitor itself, names with spaces, dots and
+  hyphens, shared vendor, wrapped keys), the grouping, group ages, Spotlight answers, Review-only
+  and Info places, container metadata, name evidence, and the 9.4 criteria on a small tree.
+  `scripts/fixture-test.sh` compares `--leftovers-json` with `scripts/fixtures/expected-leftovers.json`
+  (installed, embedded, web-deployed, recent, Spotlight-, launchd- and plug-in-found, protected,
+  ambiguous and running apps' data), runs it without FDA and with Spotlight failing, and does a
+  dry run, an act and a re-scan with `--leftovers-clean`. A debug build with `APPMON_DRY_RUN=1`
+  and no fixture root lists the real Mac read-only (`--leftovers-json`, `--scan-json`).
 - **Space map** (phase 2): `scripts/selftest.sh` checks the Space-map guard rules and its disk
   checks, sizes against `du -kx`, hard links, listing limits, roll-up of totals and
   protections, and one-item clean dry runs. `scripts/fixture-test.sh` adds a Space-map scan of the

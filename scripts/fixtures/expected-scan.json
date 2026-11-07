@@ -38,6 +38,27 @@
         "risk" : "Safe",
         "running" : "Running App",
         "selectable" : true
+      },
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Caches\/org.newvendor.tool",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 16,
+        "path" : "<root>\/home\/Library\/Caches\/org.oldvendor.editor",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Caches\/org.oldvendor.editor.helper",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
       }
     ],
     "method" : "trash"

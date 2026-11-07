@@ -69,7 +69,7 @@ enum Protection {
     static let entries: [String] = [
         // Apple and macOS
         "com.apple.*", "mobilesync", "addressbook", "callhistorydb", "knowledge", "fileprovider",
-        "cloudkit", "icloud", "org.cups.*", "loginwindow", "dock", "finder", "systemuiserver",
+        "cloudkit", "icloud", "is.workflow.*", "org.cups.*", "loginwindow", "dock", "finder", "systemuiserver",
         // Large vendors whose apps share data across products
         "com.microsoft.*", "com.google.*", "google", "org.mozilla.*", "com.jetbrains.*", "jetbrains",
         "com.docker.*",
@@ -78,6 +78,12 @@ enum Protection {
         "gpg", "gnupg", "ssh", "keychain", "keychains",
         // Developer tools that keep their own caches
         "homebrew", "python", "pip", "node", "npm", "code", "swiftpm", "coresimulator",
+        // Libraries that apps embed: their settings and caches belong to whichever app uses them
+        "com.revenuecat.*", "com.segment.*", "io.sentry.*", "com.mixpanel.*", "com.amplitude.*", "com.bugsnag.*",
+        "com.crashlytics.*", "io.fabric.*", "com.firebase.*", "com.facebook.*", "com.braze.*", "com.appsflyer.*",
+        "org.sparkle-project.*", "com.electron.*", "org.chromium.*", "io.realm.*", "com.posthog.*", "com.datadoghq.*",
+        "com.launchdarkly.*", "com.intercom.*", "com.onesignal.*", "com.newrelic.*", "com.instabug.*", "com.adjust.*",
+        "com.statsig.*", "com.squirrel.*", "com.github.squirrel.*", "sparkle", "squirrel",
     ]
 
     static func isProtected(_ key: String, ignore: Set<String> = []) -> Bool {
