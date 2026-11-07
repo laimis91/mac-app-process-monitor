@@ -334,10 +334,10 @@ struct CategoryRow: View {
                 if category.method == .tool, let i = category.items.first {
                     CheckBox(state: m.selected.contains(i.id), enabled: i.selectable) { m.toggle(i) }
                 } else {
-                    let st = m.categoryState(category)
-                    CheckBox(state: st ?? (m.safeItems(category).isEmpty ? false : nil),
-                             enabled: !m.safeItems(category).isEmpty) { m.toggleCategory(category) }
-                        .help("Selects this category's Safe items. Pick Review items one by one.")
+                    let items = m.checkboxItems(category)
+                    CheckBox(state: items.isEmpty ? false : m.categoryState(category),
+                             enabled: !items.isEmpty) { m.toggleCategory(category) }
+                        .help(checkboxHelp)
                 }
                 Image(systemName: icon).foregroundStyle(Theme.accent).frame(width: 18)
                 VStack(alignment: .leading, spacing: 2) {
@@ -360,7 +360,21 @@ struct CategoryRow: View {
             .contentShape(Rectangle())
             .onHover { hover = $0 }
             .onTapGesture(perform: toggle)
+            .contextMenu {
+                if category.method == .trash {
+                    let all = m.allTrashItems(category)
+                    Button("Select All \(all.count) Items") { m.selectAll(category) }.disabled(all.isEmpty)
+                    Button("Deselect All") { m.deselectAll(category) }
+                }
+            }
         }
+    }
+
+    var checkboxHelp: String {
+        if category.items.contains(where: \.preselected) {
+            return "Selects this category's Safe items. Right-click to select all, including Review items."
+        }
+        return "Selects every item that can be moved now. Items whose app is running are left out."
     }
 
     var sizeText: String {

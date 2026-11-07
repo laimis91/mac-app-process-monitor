@@ -118,21 +118,34 @@ final class CleanerModel: ObservableObject {
         if selected.contains(item.id) { selected.remove(item.id) } else { selected.insert(item.id) }
     }
 
-    /// A category checkbox selects only its Safe items moved to the Trash (spec 4.2).
-    func safeItems(_ c: Category) -> [CleanItem] { c.items.filter(\.preselected) }
+    /// What a category checkbox selects (spec 4.2): its Safe items when it has any. A category
+    /// with only Review items selects all of them, except items whose app is running.
+    func checkboxItems(_ c: Category) -> [CleanItem] {
+        let safe = c.items.filter(\.preselected)
+        return safe.isEmpty ? allTrashItems(c) : safe
+    }
 
+    /// Every item of the category that can be moved to the Trash now (context menu "Select all").
+    func allTrashItems(_ c: Category) -> [CleanItem] {
+        c.items.filter { $0.selectable && $0.method == .trash && $0.runningOwner == nil }
+    }
+
+    /// true: all ticked, false: none, nil: some. nil with an empty list means nothing to select.
     func categoryState(_ c: Category) -> Bool? {
-        let safe = safeItems(c)
-        guard !safe.isEmpty else { return nil }
-        let n = safe.filter { selected.contains($0.id) }.count
-        return n == safe.count ? true : n == 0 ? false : nil
+        let items = checkboxItems(c)
+        guard !items.isEmpty else { return nil }
+        let n = items.filter { selected.contains($0.id) }.count
+        return n == items.count ? true : n == 0 ? false : nil
     }
 
     func toggleCategory(_ c: Category) {
-        let safe = safeItems(c)
-        if safe.allSatisfy({ selected.contains($0.id) }) { safe.forEach { selected.remove($0.id) } }
-        else { safe.forEach { selected.insert($0.id) } }
+        let items = checkboxItems(c)
+        if items.allSatisfy({ selected.contains($0.id) }) { selected.subtract(items.map(\.id)) }
+        else { selected.formUnion(items.map(\.id)) }
     }
+
+    func selectAll(_ c: Category) { selected.formUnion(allTrashItems(c).map(\.id)) }
+    func deselectAll(_ c: Category) { selected.subtract(c.items.map(\.id)) }
 
     // MARK: Cleaning
 
