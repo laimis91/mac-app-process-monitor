@@ -134,7 +134,7 @@ struct SpaceMapView: View {
             }
         }
         .onChange(of: s.trail.count) { _, _ in shown = Self.pageSize }
-        .sheet(item: $s.pending) { n in SpaceConfirmSheet(node: n).environmentObject(s) }
+        .sheet(item: $s.pending, onDismiss: { s.confirmationClosed() }) { n in SpaceConfirmSheet(node: n).environmentObject(s) }
         .sheet(item: $s.result) { o in SpaceResultSheet(outcome: o).environmentObject(s) }
         .alert(item: $s.refusal) { r in
             Alert(title: Text("“\(r.name)” stays where it is"), message: Text(r.reason + ". You can still reveal it in Finder."),
@@ -296,7 +296,7 @@ struct SpaceConfirmSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Move to Trash", role: .destructive) { let n = node; dismiss(); s.trash(n) }
+                Button("Move to Trash", role: .destructive) { s.confirm(node); dismiss() }
             }
         }
         .padding(20)

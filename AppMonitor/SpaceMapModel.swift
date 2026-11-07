@@ -124,14 +124,21 @@ final class SpaceMapModel: ObservableObject {
         pending = n
     }
 
+    /// The confirmed item waits until the confirmation sheet has closed, so the result sheet or
+    /// refusal that follows can always be shown.
+    private var confirmed: SpaceNode?
+    func confirm(_ n: SpaceNode) { confirmed = n }
+    func confirmationClosed() {
+        pending = nil
+        if let n = confirmed { confirmed = nil; trash(n) }
+    }
+
     func trash(_ n: SpaceNode) {
         pending = nil
         if let busy = busyReason { refusal = Refusal(name: n.name, reason: busy); return }
         if demoMode {
             n.parent?.remove(n); version += 1
-            let o = Outcome(path: n.path, name: n.name, category: SpaceMap.categoryID, status: .moved, size: n.size)
-            // Let the confirmation sheet close first, so the result sheet can open.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.result = o }
+            result = Outcome(path: n.path, name: n.name, category: SpaceMap.categoryID, status: .moved, size: n.size)
             return
         }
         guard let roots, let inventory else {

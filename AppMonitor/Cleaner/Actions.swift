@@ -232,8 +232,8 @@ enum Cleaner {
             // Slow checks first: (d) age limit, readability and sockets, then (c) open files.
             do {
                 let m = ScanEngine.measure(item.path, links: nil, inspect: item.spaceMap, synced: env.spaceGuard?.isSynced)
-                guard m.complete else { skip("Part of it can't be read"); continue }
                 if let why = m.protected { skip(why); continue }
+                guard m.complete else { skip("Part of it can't be read"); continue }
                 guard !m.special else { skip("Contains a socket or pipe an app may be using"); continue }
                 guard !m.locked else { skip("Contains a locked file"); continue }
                 if let st = ScanEngine.lstatInfo(item.path), !userCanMove(item.path, st) {
