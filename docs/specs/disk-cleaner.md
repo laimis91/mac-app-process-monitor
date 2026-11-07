@@ -148,8 +148,10 @@ instant.
 
 - Reuse the existing `Panel`, `Ring`, `Chip`, `HeatBar`, `ToolButton` and `Theme` styles.
 - Each category row can be expanded to show its items (path, size, last modified, reason).
-- A category checkbox selects only that category's *Safe* items. *Review* items are ticked
-  one by one.
+- A category checkbox selects that category's *Safe* items. In a category with no *Safe*
+  items it selects all its *Review* items that go to the Trash, except items whose app is
+  running. The category row's context menu has "Select All N Items" (including *Review*) and
+  "Deselect All". Nothing here changes S6: these are user actions, not pre-selection.
 - Rows have a context menu with Reveal in Finder, Copy path, and "Always ignore this item"
   (section 9.3).
 
