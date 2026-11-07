@@ -176,17 +176,23 @@ final class SpotlightProbe: @unchecked Sendable {
             working = known.map { Self.query([$0]) == .found } ?? false
         }
         guard working == true else { return .failed }
+        // An ID that can't go into a query fails only its own group.
+        guard Self.valid(ids) else { return .failed }
         let answer = Self.query(ids)
-        // One timeout means Spotlight is stuck: every later question fails at once (S5) instead of
-        // waiting 5 seconds each and piling up blocked threads.
+        // A timeout or a failed query means Spotlight is stuck: every later question fails at once
+        // (S5) instead of waiting 5 seconds each and piling up blocked threads.
         if answer == .failed { working = false }
         return answer
     }
 
     /// IDs are used in the query only if they are plain bundle IDs; anything else is a failed probe.
+    static let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+    static func valid(_ ids: [String]) -> Bool {
+        !ids.isEmpty && ids.allSatisfy { !$0.isEmpty && $0.allSatisfy(allowed.contains) }
+    }
+
     static func query(_ ids: [String], timeout: TimeInterval = 5) -> SpotlightAnswer {
-        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
-        guard !ids.isEmpty, ids.allSatisfy({ !$0.isEmpty && $0.allSatisfy(allowed.contains) }) else { return .failed }
+        guard valid(ids) else { return .failed }
         let text = ids.map { "kMDItemCFBundleIdentifier == \"\($0)\"c" }.joined(separator: " || ")
         guard let q = MDQueryCreate(kCFAllocatorDefault, text as CFString, nil, nil) else { return .failed }
         final class Box: @unchecked Sendable { var ok = false; var count = 0 }

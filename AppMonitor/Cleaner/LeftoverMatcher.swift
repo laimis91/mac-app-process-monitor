@@ -156,8 +156,10 @@ enum LeftoverMatcher {
         if ev.selfIDs.contains(where: { BundleIDs.related(key, $0) }) { return .drop("App Monitor") }
         guard k.kind == .bundleID else { return .name }
         let base = BundleIDs.base(key)
-        // 9.3 High (1): neither the ID nor its base belongs to an installed app.
-        if let who = ev.installed(key) ?? (base != key ? ev.installed(base) : nil) { return .drop("installed: \(who)") }
+        // 9.3 High (1): neither the ID nor its base belongs to an installed app. Asked with the
+        // case found on disk, because LaunchServices may compare IDs with case.
+        let diskBase = BundleIDs.base(k.key)
+        if let who = ev.installed(k.key) ?? (base != key ? ev.installed(diskBase) : nil) { return .drop("installed: \(who)") }
         // 9.3 High (5): an installed app's name equals a whole component of the key. Hyphens and
         // underscores are ignored too ("orca-slicer" is OrcaSlicer), which only keeps more.
         let comps = key.split(separator: ".").map(String.init)
