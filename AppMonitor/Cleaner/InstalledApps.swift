@@ -1,10 +1,9 @@
 // Installed and running app inventory (spec 9.2). Foundation only: the folder scan lives here,
 // and the AppKit probes (LaunchServices, running apps) are passed in by SystemProbes.swift.
 //
-// Phase 1 uses probes 1 (LaunchServices), 3 (folders), 4 (running) and 6 (embedded bundles).
-// Probes 2 (Spotlight), 5 (launchd labels) and 7 (plug-in folders) arrive with the leftovers
-// finder in phase 3. Missing probes can only make an item Review instead of Safe, never the
-// other way round.
+// The junk rules use probes 1 (LaunchServices), 3 (folders), 4 (running) and 6 (embedded bundles).
+// The leftovers finder (Leftovers.swift) adds probes 2 (Spotlight), 5 (launchd labels) and
+// 7 (plug-in folders) on top, only for its own decisions, so they never make a junk item Safe.
 
 import Foundation
 
@@ -12,6 +11,7 @@ struct AppInfo: Codable, Equatable {
     let id: String
     let name: String
     let path: String
+    var names: [String] = []      // every name the bundle gives: name, display name, executable, file name
 }
 
 struct RunningApp: Codable, Equatable {
@@ -57,9 +57,12 @@ final class AppInventory {
         let plist = bundle + "/Contents/Info.plist"
         guard let d = NSDictionary(contentsOfFile: plist),
               let id = d["CFBundleIdentifier"] as? String, !id.isEmpty else { return nil }
-        let name = (d["CFBundleDisplayName"] as? String) ?? (d["CFBundleName"] as? String)
-            ?? URL(fileURLWithPath: bundle).deletingPathExtension().lastPathComponent
-        return AppInfo(id: id, name: name, path: bundle)
+        let file = URL(fileURLWithPath: bundle).deletingPathExtension().lastPathComponent
+        let name = (d["CFBundleDisplayName"] as? String) ?? (d["CFBundleName"] as? String) ?? file
+        var names: [String] = []
+        for n in [d["CFBundleName"] as? String, d["CFBundleDisplayName"] as? String, d["CFBundleExecutable"] as? String, file]
+            where n != nil && !n!.isEmpty && !names.contains(n!) { names.append(n!) }
+        return AppInfo(id: id, name: name, path: bundle, names: names)
     }
 
     /// Bundle IDs of helpers, extensions and login items inside an app (probe 6).

@@ -37,28 +37,17 @@ struct CheckBox: View {
 // MARK: - Disk tab
 
 struct CleanerView: View {
-    @EnvironmentObject var m: CleanerModel
+    @EnvironmentObject var m: CleanerModel          // the junk list; it owns the leftovers list
     @EnvironmentObject var space: SpaceMapModel
-    @State private var expanded: Set<String> = []
-    @State private var search = ""
-    @State private var shown: [String: Int] = [:]   // items shown per expanded category
 
-    var visible: [Category] {
-        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return m.categories }
-        return m.categories.compactMap { c in
-            if c.title.lowercased().contains(q) { return c }
-            var c2 = c
-            c2.items = c.items.filter { $0.name.lowercased().contains(q) || $0.path.lowercased().contains(q) }
-            return c2.items.isEmpty ? nil : c2
-        }
-    }
+    /// The list shown in the Junk or Leftovers view.
+    var list: CleanerModel { m.view == .leftovers ? m.leftovers : m }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
                 DiskPanel().frame(width: 320)
-                ReclaimPanel().frame(width: 320)
+                ReclaimPanel().environmentObject(list).frame(width: 320)
                 AccessPanel()
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -70,17 +59,13 @@ struct CleanerView: View {
                 Picker("", selection: $m.view) {
                     ForEach(DiskView.allCases, id: \.self) { Text($0.rawValue) }
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 170)
-                if m.view == .spaceMap { SpaceToolbar() } else { toolbar }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+                if m.view == .spaceMap { SpaceToolbar() } else { ResultsToolbar().environmentObject(list) }
             }
             .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
 
             VStack(spacing: 0) {
-                if m.view == .spaceMap {
-                    SpaceMapView()
-                } else if m.categories.isEmpty { emptyState } else {
-                    ScrollView { LazyVStack(spacing: 0) { results } }
-                }
+                if m.view == .spaceMap { SpaceMapView() } else { ResultsList().environmentObject(list) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
@@ -88,10 +73,7 @@ struct CleanerView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .padding(.horizontal, 14)
 
-            Text((m.view == .spaceMap
-                  ? "Sizes are space used on disk, as du counts it  ·  Only items you pick one at a time can go to the Trash; everything in ~/Library is Reveal only"
-                  : "Sizes are upper estimates: APFS clones and snapshots can make the real gain smaller  ·  Moved items stay in the Trash until you empty it")
-                 + (m.dryRun ? "  ·  DRY RUN: nothing is changed" : ""))
+            Text(footer + (m.dryRun ? "  ·  DRY RUN: nothing is changed" : ""))
                 .font(.caption2).foregroundStyle(m.dryRun ? Theme.yellow : Theme.faint)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 18).padding(.vertical, 8)
@@ -101,18 +83,43 @@ struct CleanerView: View {
             // Fixture UI tests: APPMON_AUTOSCAN=1 scans at launch, APPMON_EXPAND=J-TMP,… opens categories.
             let env = ProcessInfo.processInfo.environment
             if CleanerConfig.fixtureRoot != nil {
-                if let e = env["APPMON_EXPAND"] { expanded = Set(e.split(separator: ",").map(String.init)) }
-                if env["APPMON_AUTOSCAN"] == "1" { m.view == .spaceMap ? space.scan(fda: m.fda) : m.scan() }
+                if let e = env["APPMON_EXPAND"] { list.expanded = Set(e.split(separator: ",").map(String.init)); list.possibleOpen = true }
+                if env["APPMON_AUTOSCAN"] == "1" { m.view == .spaceMap ? space.scan(fda: m.fda) : list.scan() }
             }
             #endif
         }
-        .sheet(isPresented: $m.confirming) { ConfirmSheet().environmentObject(m) }
-        .sheet(isPresented: Binding(get: { m.outcomes != nil }, set: { if !$0 { m.outcomes = nil } })) {
-            ResultSheet().environmentObject(m)
-        }
+        .background(ResultSheets().environmentObject(m))
+        .background(ResultSheets().environmentObject(m.leftovers))
     }
 
-    var toolbar: some View {
+    var footer: String {
+        switch m.view {
+        case .spaceMap:
+            return "Sizes are space used on disk, as du counts it  ·  Only items you pick one at a time can go to the Trash; everything in ~/Library is Reveal only"
+        case .leftovers:
+            return "Leftovers are never pre-selected: check each one  ·  Sizes are upper estimates  ·  Moved items stay in the Trash until you empty it"
+        case .junk:
+            return "Sizes are upper estimates: APFS clones and snapshots can make the real gain smaller  ·  Moved items stay in the Trash until you empty it"
+        }
+    }
+}
+
+/// The confirmation and result sheets of one list.
+struct ResultSheets: View {
+    @EnvironmentObject var m: CleanerModel
+    var body: some View {
+        Color.clear
+            .sheet(isPresented: $m.confirming) { ConfirmSheet().environmentObject(m) }
+            .sheet(isPresented: Binding(get: { m.outcomes != nil }, set: { if !$0 { m.outcomes = nil } })) {
+                ResultSheet().environmentObject(m)
+            }
+    }
+}
+
+struct ResultsToolbar: View {
+    @EnvironmentObject var m: CleanerModel
+
+    var body: some View {
         HStack(spacing: 10) {
             if m.scanning {
                 ToolButton(icon: "stop.fill", text: "Stop") { m.stop() }
@@ -126,7 +133,7 @@ struct CleanerView: View {
             Spacer()
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(Theme.dim)
-                TextField("Filter results", text: $search).textFieldStyle(.plain)
+                TextField("Filter results", text: $m.search).textFieldStyle(.plain)
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
@@ -136,7 +143,7 @@ struct CleanerView: View {
             Button {
                 m.confirming = true
             } label: {
-                HStack(spacing: 5) { Image(systemName: "trash"); Text("Clean…") }
+                HStack(spacing: 5) { Image(systemName: "trash"); Text(m.kind == .leftovers ? "Move to Trash…" : "Clean…") }
                     .font(.callout.weight(.semibold))
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 8).fill(m.selected.isEmpty ? Color.white.opacity(0.06) : Theme.purple.opacity(0.8)))
@@ -147,16 +154,45 @@ struct CleanerView: View {
     }
 
     var lastScanText: String {
-        guard let d = m.lastScan else { return "Finds caches, logs, temporary files and developer caches you can remove." }
+        guard let d = m.lastScan else {
+            return m.kind == .leftovers ? "Finds data left behind by apps that are no longer on this Mac."
+                : "Finds caches, logs, temporary files and developer caches you can remove."
+        }
         if Date().timeIntervalSince(d) < 60 { return "Last scan just now" }
         return "Last scan " + RelativeDateTimeFormatter().localizedString(for: d, relativeTo: Date())
+    }
+}
+
+struct ResultsList: View {
+    @EnvironmentObject var m: CleanerModel
+
+    var visible: [Category] {
+        let q = m.search.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return m.categories }
+        return m.categories.compactMap { c in
+            if c.title.lowercased().contains(q) { return c }
+            var c2 = c
+            c2.items = c.items.filter { $0.name.lowercased().contains(q) || $0.path.lowercased().contains(q) }
+            return c2.items.isEmpty ? nil : c2
+        }
+    }
+
+    var body: some View {
+        if m.categories.isEmpty { emptyState } else {
+            ScrollView { LazyVStack(spacing: 0) { results } }
+        }
     }
 
     var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: m.scanning ? "hourglass" : "internaldrive").font(.system(size: 34)).foregroundStyle(Theme.accent)
-            Text(m.scanning ? m.progress : "Scan to see what you can clean").font(.headline)
-            Text("Nothing is removed without your confirmation. Files go to the Trash, so you can restore them.")
+            Image(systemName: m.scanning ? "hourglass" : m.kind == .leftovers ? "app.dashed" : "internaldrive")
+                .font(.system(size: 34)).foregroundStyle(Theme.accent)
+            Text(m.scanning ? m.progress
+                 : m.kind == .leftovers ? (m.lastScan == nil ? "Scan to find data of removed apps" : "No leftovers found")
+                 : "Scan to see what you can clean").font(.headline)
+            Text(m.kind == .leftovers
+                 ? "Only data whose app is gone from this Mac, unchanged for \(m.limitsInUse.leftovers) days or more, is listed. Nothing is pre-selected."
+                 : "Nothing is removed without your confirmation. Files go to the Trash, so you can restore them.")
                 .font(.callout).foregroundStyle(Theme.dim)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -165,14 +201,14 @@ struct CleanerView: View {
     /// One flat list, so the lazy stack only builds the rows on screen. A category with
     /// thousands of items (old temporary files) shows them a page at a time.
     enum Row: Identifiable {
-        case header(CategoryGroup)
+        case header(CategoryGroup, Int)
         case category(Category, Bool)
         case item(Category, CleanItem)
         case more(Category, Int)
         case empty(Category)
         var id: String {
             switch self {
-            case .header(let g): return "h:" + g.rawValue
+            case .header(let g, _): return "h:" + g.rawValue
             case .category(let c, _): return "c:" + c.id
             case .item(let c, let i): return "i:" + c.id + ":" + i.id
             case .more(let c, _): return "m:" + c.id
@@ -185,16 +221,19 @@ struct CleanerView: View {
 
     var rows: [Row] {
         var out: [Row] = []
-        for g in [CategoryGroup.general, .developer] {
+        let groups: [CategoryGroup] = m.kind == .leftovers ? [.leftovers, .possible] : [.general, .developer]
+        for g in groups {
             let cats = visible.filter { $0.group == g }
             guard !cats.isEmpty else { continue }
-            out.append(.header(g))
+            out.append(.header(g, cats.count))
+            // Possible (Low-confidence) leftovers stay collapsed until the user opens them (spec 9.3).
+            if g == .possible && !m.possibleOpen && m.search.isEmpty { continue }
             for c in cats {
-                let open = expanded.contains(c.id) || !search.isEmpty
+                let open = m.expanded.contains(c.id) || !m.search.isEmpty
                 out.append(.category(c, open))
                 guard open else { continue }
                 if c.items.isEmpty { out.append(.empty(c)); continue }
-                let limit = shown[c.id] ?? Self.pageSize
+                let limit = m.shown[c.id] ?? Self.pageSize
                 out += c.items.prefix(limit).map { .item(c, $0) }
                 if c.items.count > limit { out.append(.more(c, c.items.count - limit)) }
             }
@@ -205,17 +244,32 @@ struct CleanerView: View {
     @ViewBuilder var results: some View {
         ForEach(rows) { r in
             switch r {
-            case .header(let g):
-                HStack {
-                    Text(g.rawValue.uppercased()).font(.caption2.weight(.bold)).tracking(1.2).foregroundStyle(Theme.faint)
-                    Spacer()
+            case .header(let g, let n):
+                if g == .possible {
+                    Button { m.possibleOpen.toggle() } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                                .rotationEffect(.degrees(m.possibleOpen || !m.search.isEmpty ? 90 : 0))
+                            Text(g.rawValue.uppercased()).font(.caption2.weight(.bold)).tracking(1.2)
+                            Text("\(n) app\(n == 1 ? "" : "s")").font(.caption2)
+                            Spacer()
+                        }
+                        .foregroundStyle(Theme.yellow.opacity(0.9)).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 4)
+                } else {
+                    HStack {
+                        Text(g.rawValue.uppercased()).font(.caption2.weight(.bold)).tracking(1.2).foregroundStyle(Theme.faint)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 4)
                 }
-                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 4)
             case .category(let c, let open):
                 VStack(spacing: 0) {
                     Rectangle().fill(Color.white.opacity(0.04)).frame(height: 1)
                     CategoryRow(category: c, isExpanded: open) {
-                        if expanded.contains(c.id) { expanded.remove(c.id) } else { expanded.insert(c.id) }
+                        if m.expanded.contains(c.id) { m.expanded.remove(c.id) } else { m.expanded.insert(c.id) }
                     }
                 }
             case .item(let c, let i):
@@ -223,14 +277,15 @@ struct CleanerView: View {
             case .more(let c, let left):
                 HStack {
                     Button("Show \(min(left, Self.pageSize)) more (\(left) not shown)") {
-                        shown[c.id] = (shown[c.id] ?? Self.pageSize) + Self.pageSize
+                        m.shown[c.id] = (m.shown[c.id] ?? Self.pageSize) + Self.pageSize
                     }
                     .buttonStyle(.link).font(.caption)
                     Spacer()
                 }
                 .padding(.leading, 60).padding(.vertical, 6)
             case .empty(let c):
-                Text(c.notice ?? "Nothing to clean here.").font(.caption).foregroundStyle(Theme.dim)
+                Text(m.kind == .leftovers ? c.notice.map { "\($0). \(c.explanation)" } ?? "Nothing to clean here."
+                     : c.notice ?? "Nothing to clean here.").font(.caption).foregroundStyle(Theme.dim)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 60).padding(.bottom, 8)
             }
         }
@@ -274,7 +329,9 @@ struct ReclaimPanel: View {
                 }
                 Text("\(byteText(m.selectedSize)) selected in \(m.selected.count) item\(m.selected.count == 1 ? "" : "s")")
                     .font(.callout).foregroundStyle(Theme.dim)
-                Text(m.lastScan == nil ? "Run a scan to find out" : "Safe items are pre-selected. Review items are yours to pick.")
+                Text(m.lastScan == nil ? "Run a scan to find out"
+                     : m.kind == .leftovers ? "Leftovers are never pre-selected. Check each one before removing it."
+                     : "Safe items are pre-selected. Review items are yours to pick.")
                     .font(.caption).foregroundStyle(Theme.faint)
             }
         }
@@ -414,7 +471,11 @@ struct CategoryRow: View {
         case "J-DOCKER": return "cube"
         case "J-XC-DD", "J-XC-DS", "J-XC-SIM": return "hammer"
         case "J-UNITY", "J-UNITY-UPM": return "gamecontroller"
-        default: return category.method == .tool ? "terminal" : "folder"
+        case Leftovers.fdaID: return "lock"
+        case Leftovers.spotlightID: return "magnifyingglass"
+        default:
+            if category.id.hasPrefix("L:") { return "app.dashed" }
+            return category.method == .tool ? "terminal" : "folder"
         }
     }
 }

@@ -1,0 +1,165 @@
+[
+  {
+    "group" : "Leftovers",
+    "id" : "L:org.oldvendor.editor",
+    "items" : [
+      {
+        "kb" : 4,
+        "path" : "<root>\/Library\/Application Support\/org.oldvendor.editor",
+        "preselected" : false,
+        "reason" : "App data for all users of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30. Needs administrator rights to remove. Remove it in Finder.",
+        "risk" : "Info",
+        "selectable" : false
+      },
+      {
+        "kb" : 16,
+        "path" : "<root>\/home\/Library\/Application Scripts\/org.oldvendor.editor",
+        "preselected" : false,
+        "reason" : "App scripts folder of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 16,
+        "path" : "<root>\/home\/Library\/Application Support\/org.oldvendor.editor",
+        "preselected" : false,
+        "reason" : "App data of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 16,
+        "path" : "<root>\/home\/Library\/Caches\/org.oldvendor.editor",
+        "preselected" : false,
+        "reason" : "Cache of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Caches\/org.oldvendor.editor.helper",
+        "preselected" : false,
+        "reason" : "Cache of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 12,
+        "path" : "<root>\/home\/Library\/Containers\/org.oldvendor.editor",
+        "preselected" : false,
+        "reason" : "App container of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Cookies\/org.oldvendor.editor.binarycookies",
+        "preselected" : false,
+        "reason" : "Cookies of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Group Containers\/ABCDE12345.org.oldvendor.editor",
+        "preselected" : false,
+        "reason" : "Shared app data of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 16,
+        "path" : "<root>\/home\/Library\/HTTPStorages\/org.oldvendor.editor",
+        "preselected" : false,
+        "reason" : "Web storage of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Preferences\/org.oldvendor.editor.plist",
+        "preselected" : false,
+        "reason" : "Settings file of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Saved Application State\/org.oldvendor.editor.savedState",
+        "preselected" : false,
+        "reason" : "Saved window state of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 16,
+        "path" : "<root>\/home\/Library\/WebKit\/org.oldvendor.editor",
+        "preselected" : false,
+        "reason" : "WebKit data of Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      }
+    ],
+    "title" : "Old Editor"
+  },
+  {
+    "group" : "Possible leftovers, check before removing",
+    "id" : "L:com.unity3d.fixture",
+    "items" : [
+      {
+        "kb" : 16,
+        "path" : "<root>\/home\/Library\/Caches\/com.unity3d.fixture",
+        "preselected" : false,
+        "reason" : "Cache of com.unity3d.fixture, an app not found on this Mac, unchanged for N days, limit 90. Another app from com.unity3d is on this Mac and may use it, so check it first.",
+        "risk" : "Review",
+        "selectable" : true
+      }
+    ],
+    "title" : "com.unity3d.fixture"
+  },
+  {
+    "group" : "Possible leftovers, check before removing",
+    "id" : "L:name:org.oldvendor.editor",
+    "items" : [
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Application Support\/Old Editor",
+        "preselected" : false,
+        "reason" : "App data named “Old Editor”, like Old Editor (org.oldvendor.editor), an app not found on this Mac, unchanged for N days, limit 90. Items named by app name can belong to another app, so check it first.",
+        "risk" : "Review",
+        "selectable" : true
+      }
+    ],
+    "title" : "Named like Old Editor"
+  },
+  {
+    "group" : "Possible leftovers, check before removing",
+    "id" : "L:com.fixture.gone",
+    "items" : [
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Application Support\/com.fixture.gone",
+        "preselected" : false,
+        "reason" : "App data of com.fixture.gone, an app not found on this Mac, unchanged for N days, limit 90. Another app from com.fixture is on this Mac and may use it, so check it first.",
+        "risk" : "Review",
+        "selectable" : true
+      }
+    ],
+    "title" : "com.fixture.gone"
+  },
+  {
+    "group" : "Leftovers",
+    "id" : "L:org.mismatch.app",
+    "items" : [
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Application Support\/org.mismatch.app",
+        "preselected" : false,
+        "reason" : "App data of org.mismatch.app, an app not found on this Mac, unchanged for N days, limit 30.",
+        "risk" : "Review",
+        "selectable" : true
+      }
+    ],
+    "title" : "org.mismatch.app"
+  }
+]

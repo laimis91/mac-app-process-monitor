@@ -24,6 +24,9 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         batchRetry()
         spaceRules()
         spaceMap()
+        leftoverScreen()
+        leftoverDecide()
+        leftoverScan()
         print("selftest: \(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
     }
@@ -540,6 +543,258 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         var noGuard = env; noGuard.spaceGuard = nil
         if let n = find("Projects/site") {
             eq(Cleaner.clean([SpaceMap.item(n)], env: noGuard).first?.reason, "No Space-map guard", "clean: no guard, no action")
+        }
+    }
+
+    // MARK: Leftovers (spec 9)
+
+    /// Evidence for the pure matcher tests: `ids` are installed (dot-prefix), `names` are app names.
+    static func evidence(ids: [String] = ["com.inst.app"], exact: [String] = [], names: [String] = ["Inst App"],
+                         spotlight: @escaping ([String]) -> SpotlightAnswer = { _ in .notFound }) -> LeftoverEvidence {
+        LeftoverEvidence(
+            installed: { id in
+                if exact.contains(where: { $0.caseInsensitiveCompare(id) == .orderedSame }) { return "exact" }
+                return ids.first { BundleIDs.belongs(id, to: $0) }
+            },
+            names: Set(names.map(LeftoverEvidence.normalize)),
+            vendors: Set((ids + exact).map(BundleIDs.vendor)), spotlight: spotlight, selfIDs: Leftovers.ownIDs)
+    }
+
+    static func leftoverScreen() {
+        let ev = evidence(names: ["Inst App", "Spotify", "Visual Studio Code", "Foo.Bar", "Alt-Tab"])
+        func s(_ name: String, _ e: LeftoverEvidence? = nil) -> LeftoverMatcher.Screen { LeftoverMatcher.screen(CandidateKey.parse(name), e ?? ev) }
+        func dropped(_ name: String, _ e: LeftoverEvidence? = nil) -> Bool { if case .drop = s(name, e) { return true }; return false }
+        // 9.3 High (1): installed IDs, their helpers, and base IDs
+        eq(s("com.gone.app"), .bundle(group: "com.gone.app", low: false), "not installed: High")
+        eq(s("com.gone.app.plist"), .bundle(group: "com.gone.app", low: false), "plist key")
+        eq(s("com.gone.app.savedState"), .bundle(group: "com.gone.app", low: false), "savedState key")
+        eq(s("com.gone.app.helper"), .bundle(group: "com.gone.app", low: false), "helper groups under its base")
+        eq(s("com.gone.app.FinderSync"), .bundle(group: "com.gone.app", low: false), "base ID without case")
+        check(dropped("com.inst.app"), "installed ID")
+        check(dropped("COM.Inst.App"), "installed ID without case")
+        check(dropped("com.inst.app.widget.extra"), "dot-prefix of an installed ID")
+        check(!dropped("com.inst.application", evidence(ids: ["com.inst.app"], names: [])) , "plain prefix is not a match")
+        check(dropped("com.solo.tool.helper", evidence(ids: [], exact: ["com.solo.tool"], names: [])), "base ID installed")
+        check(dropped("com.solo.tool.Agent", evidence(ids: [], exact: ["com.solo.tool"], names: [])), "base ID: agent suffix")
+        check(!dropped("com.solo.tool.pro", evidence(ids: [], exact: ["com.solo.tool"], names: [])), "unknown suffix is not a base")
+        // 9.3 High (2): protection list
+        for k in ["com.apple.Safari", "com.apple.Safari.plist", "something.apple.y", "com.google.Chrome", "Google",
+                  "org.mozilla.firefox", "com.jetbrains.rider", "JetBrains", "com.docker.docker", "1Password",
+                  "com.agilebits.onepassword7", "Bitwarden", "org.cups.printers", "loginwindow.plist", "Homebrew",
+                  "group.com.apple.notes", "ABCDE12345.com.apple.x", "is.workflow.my.app", "group.is.workflow.shortcuts",
+                  "MobileSync", "AddressBook", "CallHistoryDB", "Knowledge", "FileProvider", "CoreSimulator",
+                  "com.microsoft.teams2", "org.python.python", "com.vendor.ssh"] {
+            check(dropped(k), "protected: \(k)")
+        }
+        // 9.3 High (4): App Monitor itself
+        check(dropped("io.github.laimis91.appmonitor"), "App Monitor")
+        check(dropped("io.github.laimis91.appmonitor.plist"), "App Monitor settings")
+        // 9.3 High (5): installed app names against whole key components, never split
+        check(dropped("com.spotify.client"), "component equals an app name")
+        check(dropped("com.vendor.visualstudiocode"), "name with spaces compared without them")
+        check(!dropped("com.vendor.visual"), "a name is never split into words")
+        check(!dropped("com.foo.bar"), "a name with a dot never matches one component")
+        check(dropped("com.vendor.alt-tab"), "hyphenated name matches a whole component")
+        check(!dropped("com.vendor.spotifyx"), "no substring matching")
+        check(dropped("com.vendor.orca-slicer", evidence(names: ["OrcaSlicer"])), "hyphens ignored: orca-slicer is OrcaSlicer")
+        check(dropped("com.vendor.my_tool", evidence(names: ["My Tool"])), "underscores and spaces ignored")
+        for k in ["com.revenuecat.user_defaults", "com.segment.storage.x", "io.sentry.session", "org.sparkle-project.Sparkle",
+                  "com.electron.someapp", "com.squirrel.foo.ShipIt"] {
+            check(dropped(k), "library namespace protected: \(k)")
+        }
+        // 9.2 shared vendor: Low
+        eq(s("com.inst.other"), .bundle(group: "com.inst.other", low: true), "same vendor: Low")
+        // name candidates and wrapped keys
+        eq(s("GoneApp"), .name, "plain name: name candidate")
+        eq(s("group.com.gone.app"), .bundle(group: "com.gone.app", low: false), "group. prefix reduces to the ID")
+        eq(s("ABCDE12345.com.gone.app"), .bundle(group: "com.gone.app", low: false), "team ID prefix reduces to the ID")
+        eq(s("ABCDE12345.com.gone"), .name, "team ID with a short rest is a name")
+        eq(LeftoverMatcher.prefixes("com.a.b.c"), ["com.a.b.c", "com.a.b"], "dot-prefixes")
+        eq(LeftoverMatcher.prefixes("com.a"), ["com.a"], "short ID")
+    }
+
+    static func cand(_ place: String, _ name: String, days d: Double? = 100, bundleName: String? = nil,
+                     containerID: String? = nil, doubt: String? = nil, immovable: String? = nil) -> LeftoverCandidate {
+        let pl = LeftoverPlace.named(place)
+        var c = LeftoverCandidate(place: pl, name: name, path: "/fixture/" + pl.rel + "/" + name)
+        c.newest = d.map { Date(timeIntervalSinceNow: -$0 * 86_400) }
+        c.size = 4096
+        c.bundleName = bundleName; c.containerID = containerID; c.doubt = doubt; c.immovable = immovable
+        return c
+    }
+
+    static func leftoverDecide() {
+        let now = Date(timeIntervalSinceNow: 60), lim = AgeLimits()
+        func run(_ cs: [LeftoverCandidate], _ ev: LeftoverEvidence? = nil) -> LeftoverDecision {
+            LeftoverMatcher.decide(cs, ev: ev ?? evidence(), limits: lim, now: now)
+        }
+        let app = [cand("appSupport", "com.gone.app"), cand("caches", "com.gone.app"),
+                   cand("preferences", "com.gone.app.plist", bundleName: "Gone App"),
+                   cand("savedState", "com.gone.app.savedState"), cand("caches", "com.gone.app.helper"),
+                   cand("caches", "com.gone.app.ShipIt")]
+        // 9.4 (3): one High group with every item, named from the settings file
+        let d = run(app)
+        eq(d.groups.count, 1, "one group")
+        eq(d.groups.first?.confidence, .high, "High")
+        eq(d.groups.first?.items.count, 6, "all items, helpers and sub-IDs included")
+        eq(d.groups.first?.title, "Gone App", "last-known name")
+        check(d.groups.first?.items.allSatisfy(\.selectable) == true, "movable items selectable")
+        check(d.groups.first?.items.first?.reason.contains("an app not found on this Mac, unchanged for 100 days, limit 30.") == true,
+              "reason names the rule and the limit: \(d.groups.first?.items.first?.reason ?? "")")
+        // 9.4 (4): data newer than the limit, anywhere in the group, keeps the whole group
+        eq(run(app + [cand("logs", "com.gone.app", days: 10)]).groups.count, 0, "one recent item keeps the group")
+        eq(run([cand("caches", "com.gone.app", days: 29)]).groups.count, 0, "29 days: not reported")
+        eq(run([cand("caches", "com.gone.app", days: 30)]).groups.count, 1, "30 days: reported")
+        eq(run(app + [cand("caches", "com.gone.app.x", days: nil)]).groups.count, 0, "unknown age keeps the group (S5)")
+        eq(run(app + [cand("appSupport", "com.gone.app.web", doubt: "Contains an app")]).groups.count, 0, "an app inside keeps the group")
+        // 9.4 (6): Spotlight finds it, or doesn't answer
+        eq(run(app, evidence(spotlight: { _ in .found })).groups.count, 0, "found by Spotlight: kept")
+        let failed = run(app, evidence(spotlight: { _ in .failed }))
+        check(failed.groups.isEmpty && failed.spotlightFailed == 1, "Spotlight didn't answer: kept and counted")
+        var asked: [String] = []
+        _ = run([cand("caches", "com.gone.app.helper.x")], evidence(spotlight: { ids in asked = ids; return .notFound }))
+        eq(asked, ["com.gone.app.helper.x", "com.gone.app.helper", "com.gone.app"], "Spotlight asked for the ID and its prefixes")
+        // review-only and info places only join groups found elsewhere
+        eq(run([cand("groupContainers", "group.com.gone.app"), cand("launchAgents", "com.gone.app.plist")]).groups.count, 0,
+           "review-only places never start a group")
+        let joined = run(app + [cand("groupContainers", "group.com.gone.app"), cand("groupContainers", "ABCDE12345.com.gone.app.shared"),
+                                cand("appScripts", "com.gone.app"), cand("sysLaunchDaemons", "com.gone.app.helper.plist")])
+        eq(joined.groups.first?.items.count, 10, "review-only and info items join the group")
+        let info = joined.groups.first?.items.first { $0.candidate.place.id == "sysLaunchDaemons" }
+        check(info?.selectable == false && info?.reason.contains("Needs administrator rights") == true, "info place: not selectable")
+        // Containers count only when their metadata names the ID
+        eq(run(app + [cand("containers", "com.gone.app", containerID: "com.gone.app")]).groups.first?.items.count, 7, "container with matching metadata")
+        eq(run(app + [cand("containers", "com.gone.app", containerID: "com.other.app")]).groups.first?.items.count, 6, "container metadata mismatch")
+        eq(run(app + [cand("containers", "com.gone.app")]).groups.first?.items.count, 6, "container without metadata")
+        // only settings files: Low, because libraries inside other apps write settings under their own IDs
+        let prefsOnly = run([cand("preferences", "com.lib.thing.plist", days: 120), cand("launchAgents", "com.lib.thing.plist", days: 120)])
+        eq(prefsOnly.groups.first?.confidence, .low, "settings files only: Low")
+        check(prefsOnly.groups.first?.items.first?.reason.contains("Only a settings file was found") == true, "settings-only reason")
+        eq(run([cand("preferences", "com.lib.thing.plist", days: 60)]).groups.count, 0, "settings only: Low age limit")
+        eq(run([cand("preferences", "com.lib.thing.plist"), cand("caches", "com.lib.thing")]).groups.first?.confidence, .high,
+           "settings plus other data: High")
+        check(Leftovers.category(prefsOnly.groups[0]).items.allSatisfy { !$0.owners.contains("com.lib") }, "settings-only: no vendor owner")
+        // the user can't move it: shown, not selectable
+        let im = run([cand("caches", "com.gone.app", immovable: "You can't move it yourself.")])
+        eq(im.groups.first?.items.first?.selectable, false, "immovable: not selectable")
+        // separate apps stay separate; a sub-ID joins the shorter group
+        eq(run(app + [cand("caches", "com.gone.other")]).groups.count, 2, "two apps, two groups")
+        // shared vendor: Low, with the Low age limit
+        let vendor = evidence(ids: ["com.inst.app"])
+        eq(run([cand("caches", "com.inst.oldapp", days: 60)], vendor).groups.count, 0, "Low needs the Low limit (90)")
+        let low = run([cand("caches", "com.inst.oldapp", days: 120)], vendor)
+        eq(low.groups.first?.confidence, .low, "same vendor: Low")
+        check(low.groups.first?.items.first?.reason.contains("Another app from com.inst is on this Mac") == true, "Low reason")
+        eq(run([cand("caches", "com.inst.oldapp", days: 120), cand("caches", "com.inst.oldapp.helper", days: 40)], vendor).groups.count, 0,
+           "Low group: every item meets the Low limit")
+        // 9.3 Low: plain names need positive evidence
+        let named = run(app + [cand("appSupport", "GoneApp", days: 120), cand("caches", "Gone App", days: 120)])
+        let possible = named.groups.first { $0.key.hasPrefix("name:") }
+        eq(possible?.items.count, 2, "names equal to the last-known name: Low")
+        eq(possible?.confidence, .low, "name evidence is Low")
+        eq(run(app + [cand("appSupport", "GoneApp", days: 60)]).groups.count, 1, "name item needs the Low limit")
+        eq(run(app + [cand("appSupport", "OtherName", days: 120)]).groups.count, 1, "no evidence: not reported")
+        eq(run([cand("appSupport", "GoneApp", days: 120)]).groups.count, 0, "no High group: no evidence")
+        let short = [cand("preferences", "com.gone.app.plist", bundleName: "Gone"), cand("appSupport", "Gone", days: 120)]
+        eq(run(short).groups.count, 1, "names under 5 characters are never matched")
+        eq(run(app + [cand("appSupport", "GoneApp", days: 120)], evidence(names: ["GoneApp"])).groups.filter { $0.key.hasPrefix("name:") }.count, 0,
+           "a name equal to an installed app's name is never matched")
+        eq(run(app + [cand("logs", "GoneApp", days: 120)]).groups.filter { $0.key.hasPrefix("name:") }.first?.items.count, 1,
+           "any orphan place can hold a name item")
+        eq(run(app + [cand("groupContainers", "GoneApp", days: 120)]).groups.count, 1, "review-only places hold no name items")
+
+        // categories: Review, never pre-selected (9.4: 5), Low under Possible
+        let cats = (named.groups + low.groups).map(Leftovers.category)
+        check(cats.allSatisfy { $0.items.allSatisfy { !$0.preselected && ($0.risk == .review || $0.risk == .info) } }, "never pre-selected")
+        check(cats.allSatisfy { $0.items.allSatisfy { $0.inspect && $0.checkOpenFiles && $0.ageLimitDays != nil } }, "re-checked when cleaned")
+        eq(cats.filter { $0.group == .possible }.count, 2, "Low groups are Possible leftovers")
+        check(Leftovers.category(low.groups[0]).items[0].owners.contains("com.inst"), "Low vendor: any running app of the vendor blocks it")
+        let jc = Leftovers.category(joined.groups[0])
+        check(jc.items.allSatisfy { !$0.preselected }, "no group container or launch agent pre-selected")
+        check(jc.items.contains { $0.owners.contains("com.gone.app.helper") && $0.owners.contains("com.gone.app") }, "owners for the running check")
+    }
+
+    /// The disk side on a small tree (9.4: 1, 2, 3, 6).
+    static func leftoverScan() {
+        let fm = FileManager.default
+        let root = "/private/tmp/appmon-fixture-selftest-lo-\(getpid())"
+        try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+        guard let r = Roots.fixture(root) else { check(false, "leftover fixture"); return }
+        func file(_ path: String, _ bytes: Int = 4096) {
+            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: Data(count: bytes))
+        }
+        func app(_ path: String, _ id: String, _ name: String) {
+            file(path + "/Contents/MacOS/x")
+            (["CFBundleIdentifier": id, "CFBundleName": name] as NSDictionary).write(toFile: path + "/Contents/Info.plist", atomically: true)
+        }
+        let L = r.h("Library")
+        app(r.applications + "/Inst.app", "com.inst.app", "Inst")                         // 9.4 (1)
+        app(L + "/Application Support/WebTool/Web Tool.app", "com.web.tool", "Web Tool")   // 9.4 (2)
+        try? fm.createDirectory(atPath: L + "/Preferences", withIntermediateDirectories: true)
+        for id in ["com.inst.app", "com.web.tool", "com.gone.app", "com.fresh.app"] {
+            file(L + "/Caches/\(id)/data"); file(L + "/Application Support/\(id)/data")
+            (["CFBundleName": id == "com.gone.app" ? "Gone App" : "X"] as NSDictionary).write(toFile: L + "/Preferences/\(id).plist", atomically: true)
+            file(L + "/Saved Application State/\(id).savedState/windows.plist")
+        }
+        file(L + "/Application Support/GoneApp/x")                 // name evidence
+        file(L + "/Group Containers/group.com.gone.app/x")
+        file(L + "/Preferences/com.gone.app.notplist")             // wrong extension
+        file(L + "/Caches/com.ignored.app/x")
+        try? fm.createSymbolicLink(atPath: L + "/Caches/com.link.app", withDestinationPath: r.home)
+        func age(_ path: String, _ d: Double) {
+            let t = Date(timeIntervalSinceNow: -d * 86_400)
+            let e = fm.enumerator(atPath: path)
+            while let rel = e?.nextObject() as? String {
+                try? fm.setAttributes([.modificationDate: t], ofItemAtPath: path + "/" + rel)
+            }
+            try? fm.setAttributes([.modificationDate: t], ofItemAtPath: path)
+        }
+        age(root, 200)
+        for p in ["Caches/com.fresh.app/data", "Caches/com.fresh.app"] { try? fm.setAttributes([.modificationDate: Date()], ofItemAtPath: L + "/" + p) }
+
+        func scan(fda: FDAStatus = .granted, spotlight: @escaping ([String]) -> SpotlightAnswer = { _ in .notFound }) -> [Category] {
+            let inv = AppInventory(roots: r, lookup: nil, running: { [] })
+            var ctx = ScanContext(roots: r, limits: AgeLimits(), fda: fda, ignore: [(L + "/Caches/com.ignored.app").lowercased()],
+                                  inventory: inv, running: [], tools: ToolLocator(dirs: [], xcodeSelectOK: true),
+                                  cancel: CancelFlag(), now: Date())
+            ctx.spotlight = spotlight
+            return Leftovers.scan(ctx).categories
+        }
+        let cats = scan()
+        let paths = Set(cats.flatMap(\.items).map { $0.path.replacingOccurrences(of: L + "/", with: "") })
+        check(!paths.contains { $0.contains("com.inst.app") }, "9.4 (1): installed app's data not reported")
+        check(!paths.contains { $0.contains("com.web.tool") || $0.contains("WebTool") }, "9.4 (2): app inside Application Support kept")
+        check(!paths.contains { $0.contains("com.fresh.app") }, "9.4 (4): recent data not reported")
+        let gone = cats.first { $0.id == "L:com.gone.app" }
+        eq(gone?.group, .leftovers, "9.4 (3): one High group")
+        eq(Set(gone?.items.map { $0.path.replacingOccurrences(of: L + "/", with: "") } ?? []),
+           ["Application Support/com.gone.app", "Caches/com.gone.app", "Preferences/com.gone.app.plist",
+            "Saved Application State/com.gone.app.savedState", "Group Containers/group.com.gone.app"], "9.4 (3): its items")
+        eq(gone?.title, "Gone App", "name from the settings file")
+        eq(cats.first { $0.id == "name:com.gone.app" || $0.id == "L:name:com.gone.app" }?.items.map(\.name), ["GoneApp"], "named folder: Possible")
+        check(!paths.contains { $0.contains("ignored") || $0.contains("link") || $0.hasSuffix("notplist") }, "ignored, symlinks, wrong extension")
+        check(cats.flatMap(\.items).allSatisfy { !$0.preselected }, "9.4 (5): nothing pre-selected")
+        check(cats.flatMap(\.items).allSatisfy { $0.allowRoot.isEmpty || PathGuard(roots: r).check($0.path, allowRoot: $0.allowRoot) == nil },
+              "every item passes the path guard with its root")
+        // no Full Disk Access: containers aren't entered and are flagged
+        let nofda = scan(fda: .denied)
+        check(nofda.contains { $0.id == Leftovers.fdaID && $0.notice == "Needs Full Disk Access" }, "no FDA: notice row")
+        check(!nofda.flatMap(\.items).contains { $0.path.contains("Group Containers") }, "no FDA: group containers not entered")
+        // 9.4 (6): Spotlight doesn't answer: the scan completes and lists nothing it couldn't confirm
+        let sp = scan(spotlight: { _ in .failed })
+        check(!sp.contains { $0.id.hasPrefix("L:") }, "Spotlight failed: nothing reported")
+        check(sp.contains { $0.id == Leftovers.spotlightID }, "Spotlight failed: notice row")
+        // cleaning a leftover re-checks contents: an app put inside since the scan stops it
+        if let g = cats.first(where: { $0.id == "L:com.gone.app" }), let item = g.items.first(where: { $0.path.hasSuffix("Application Support/com.gone.app") }) {
+            app(item.path + "/Sneaky.app", "com.sneaky", "Sneaky")
+            let inv = AppInventory(roots: r, lookup: nil, running: { [] })
+            let env = CleanEnvironment(guardian: PathGuard(roots: r), runningNow: { [] }, inventory: inv, roots: r, dryRun: true, now: Date.init)
+            check(Cleaner.clean([(g, item)], env: env).first?.reason?.hasPrefix("Contains an app") == true, "app inside at clean time: skipped")
+            let running = CleanEnvironment(guardian: PathGuard(roots: r), runningNow: { [RunningApp(id: "com.gone.app", name: "Gone App")] },
+                                           inventory: inv, roots: r, dryRun: true, now: Date.init)
+            eq(Cleaner.clean([(g, g.items[0])], env: running).first?.reason, "Gone App is running", "running app at clean time: skipped")
         }
     }
 }

@@ -4,6 +4,8 @@
 //   APPMON_SCAN_ROOT=…  APPMON_SELECT="home/Library/Logs/old,J-NPM"  AppMonitor --clean-json
 //
 //   APPMON_SCAN_ROOT=…  AppMonitor --space-json          # Space map: every listed item, size, reason
+//   APPMON_SCAN_ROOT=…  AppMonitor --leftovers-json      # Leftovers: groups, items, reasons
+//   APPMON_SCAN_ROOT=…  APPMON_SELECT="home/Library/Caches/com.x" AppMonitor --leftovers-clean
 //   APPMON_SCAN_ROOT=…  APPMON_SELECT="home/Projects/x" AppMonitor --space-trash
 //
 // --clean-json selects the pre-selected items plus the listed paths (relative to the root) and
@@ -17,13 +19,22 @@ enum Headless {
     static func runIfRequested() {
         let args = CommandLine.arguments
         guard args.contains("--scan-json") || args.contains("--clean-json") || args.contains("--space-json")
-              || args.contains("--space-trash") else { return }
-        guard let root = CleanerConfig.fixtureRoot else {
+              || args.contains("--space-trash") || args.contains("--leftovers-json")
+              || args.contains("--leftovers-clean") else { return }
+        // A read-only listing of the real Mac is allowed in a dry run (manual checks, spec 13).
+        // Cleaning headlessly always needs a fixture tree.
+        let realListing = CleanerConfig.fixtureRoot == nil && CleanerConfig.env["APPMON_DRY_RUN"] == "1"
+            && (args.contains("--leftovers-json") || args.contains("--scan-json"))
+            && !args.contains("--clean-json") && !args.contains("--leftovers-clean") && !args.contains("--space-trash")
+        guard let root = CleanerConfig.fixtureRoot ?? (realListing ? Roots.real().home : nil) else {
             FileHandle.standardError.write("Headless mode needs APPMON_SCAN_ROOT (a fixture tree)\n".data(using: .utf8)!)
             exit(2)
         }
         if args.contains("--space-json") || args.contains("--space-trash") { space(root, trash: args.contains("--space-trash")) }
         let ctx = CleanerConfig.context(limits: AgeLimits(), ignore: [], cancel: CancelFlag())
+        if args.contains("--leftovers-json") || args.contains("--leftovers-clean") {
+            leftovers(root, ctx, clean: args.contains("--leftovers-clean"))
+        }
         var cats: [Category] = []
         let lock = NSLock()
         Rules.scan(ctx, progress: { _ in }, found: { c in lock.lock(); cats.append(c); lock.unlock() })
@@ -72,6 +83,34 @@ enum Headless {
         FileHandle.standardOutput.write(data)
         FileHandle.standardOutput.write("\n".data(using: .utf8)!)
         exit(0)
+    }
+
+    /// Leftovers of the fixture tree, or a clean of the selected leftover items (nothing is
+    /// pre-selected, so only the listed paths are cleaned).
+    static func leftovers(_ root: String, _ ctx: ScanContext, clean: Bool) -> Never {
+        func rel(_ p: String) -> String { p.hasPrefix(root) ? "<root>" + p.dropFirst(root.count) : p }
+        let cats = Leftovers.scan(ctx).categories
+        guard clean else {
+            write(cats.map { c -> [String: Any] in
+                var d: [String: Any] = ["id": c.id, "title": c.title, "group": c.group.rawValue]
+                if let n = c.notice { d["notice"] = n }
+                d["items"] = c.items.sorted { $0.path < $1.path }.map { i -> [String: Any] in
+                    ["path": rel(i.path), "risk": i.risk.rawValue, "kb": i.size / 1024, "selectable": i.selectable,
+                     "preselected": i.preselected, "reason": i.reason.replacingOccurrences(of: "unchanged for [0-9]+ days", with: "unchanged for N days",
+                                                           options: .regularExpression)]
+                }
+                return d
+            })
+        }
+        let wanted = Set((ProcessInfo.processInfo.environment["APPMON_SELECT"] ?? "").split(separator: ",").map(String.init))
+        var pairs: [(Category, CleanItem)] = []
+        for c in cats { for i in c.items where i.preselected || wanted.contains(String(rel(i.path).dropFirst("<root>/".count))) { pairs.append((c, i)) } }
+        let result = Cleaner.clean(pairs, env: CleanerConfig.cleanEnvironment(ctx))
+        write(result.sorted { $0.path < $1.path }.map { o -> [String: Any] in
+            var e: [String: Any] = ["path": rel(o.path), "category": o.category, "status": o.status.rawValue, "kb": o.size / 1024]
+            if let r = o.reason { e["reason"] = r }
+            return e
+        })
     }
 
     /// Space map of the fixture tree. Every folder lists its contents (no 1 MB minimum).

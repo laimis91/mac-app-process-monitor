@@ -61,13 +61,21 @@ enum ScanEngine {
         case synced = "Contains cloud-synced items. Remove them in Finder, because they would be deleted on every synced device."
     }
 
-    /// Whether this entry is always protected. `name` is checked for folders only.
-    static func protectedKind(name: () -> String, _ st: stat, rootDev: Int32, uid: uid_t) -> Protected? {
+    /// Whether this entry is always protected. `name` is checked for folders only. With
+    /// `bundlePath`, a folder named "….app" counts as an app only if it looks like a bundle (it has
+    /// Contents/Info.plist or Contents/MacOS), so data folders named by bundle ID ("com.vendor.app")
+    /// aren't mistaken for apps.
+    static func protectedKind(name: () -> String, _ st: stat, rootDev: Int32, uid: uid_t,
+                              bundlePath: (() -> String)? = nil) -> Protected? {
         if st.st_uid != uid { return .foreign }
         if st.st_dev != rootDev { return .mount }
         guard (st.st_mode & S_IFMT) == S_IFDIR else { return nil }
         let n = name().lowercased()
-        if n.hasSuffix(".app") { return .app }
+        if n.hasSuffix(".app") {
+            guard let bundlePath else { return .app }
+            let p = bundlePath()
+            if lstatInfo(p + "/Contents/Info.plist") != nil || lstatInfo(p + "/Contents/MacOS") != nil { return .app }
+        }
         if n.hasSuffix(".photoslibrary") { return .photos }
         return nil
     }
@@ -84,7 +92,7 @@ enum ScanEngine {
     /// checked with `synced` for cloud sync, and nothing stored only in the cloud is downloaded
     /// to look at it (S11).
     static func measure(_ path: String, links: LinkSet?, cancel: CancelFlag? = nil, inspect: Bool = false,
-                        synced: ((String) -> Bool)? = nil) -> Measure {
+                        synced: ((String) -> Bool)? = nil, strictApps: Bool = false) -> Measure {
         var m = Measure()
         let prevPolicy = inspect ? getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD) : -1
         if inspect {
@@ -121,7 +129,8 @@ enum ScanEngine {
             let st = sp.pointee
             if rootDev == nil { rootDev = st.st_dev }
             if inspect, m.protected == nil,
-               let k = protectedKind(name: { ftsName(e) }, st, rootDev: rootDev!, uid: uid) {
+               let k = protectedKind(name: { ftsName(e) }, st, rootDev: rootDev!, uid: uid,
+                                     bundlePath: strictApps ? { String(cString: e.pointee.fts_path) } : nil) {
                 m.protected = k.rawValue
             }
             if inspect, m.protected == nil {

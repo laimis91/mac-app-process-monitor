@@ -2,7 +2,7 @@
 # End-to-end fixture test for the disk cleaner (spec 13). Builds a debug app into a temporary
 # folder, scans a fake tree, compares with scripts/fixtures/expected-scan.json, then cleans it.
 #
-# The act step moves the fixture's fake files to your Trash (they are tiny and made up).
+# The act steps move the fixture's fake files to your Trash (they are tiny and made up).
 #   scripts/fixture-test.sh            # dry run and act
 #   UPDATE_GOLDEN=1 scripts/fixture-test.sh   # rewrite the golden file after checking it by hand
 set -euo pipefail
@@ -153,6 +153,103 @@ for k in ["home/Projects/site", "home/Downloads/old.iso"]:
 assert o["home/Projects/held"]["status"] == "skipped" and o["home/Projects/held"]["reason"].startswith("In use by"), o["home/Projects/held"]
 assert os.path.exists(os.path.join(fix, "home/Projects/held/x"))
 assert os.path.exists(os.path.join(fix, "home/Library/Caches/com.fixture.running"))
+PY
+
+# 8. Leftovers (spec 9): golden file, then the 9.4 acceptance criteria one by one
+run "$BIN" --leftovers-json > "$WORK/left.json"
+if [ "${UPDATE_GOLDEN:-}" = "1" ]; then cp "$WORK/left.json" "$ROOT/scripts/fixtures/expected-leftovers.json"; fi
+if diff -u "$ROOT/scripts/fixtures/expected-leftovers.json" "$WORK/left.json" > "$WORK/left.diff"; then ok "leftovers match golden file"
+else bad "leftovers differ from golden file"; cat "$WORK/left.diff"; fi
+python3 - "$WORK/left.json" <<'PY' && ok "leftovers: installed, recent, protected and ambiguous data kept; one group per removed app" || bad "leftovers scan"
+import json, sys
+cats = json.load(open(sys.argv[1]))
+g = {c["id"]: c for c in cats}
+paths = {i["path"].replace("<root>/home/Library/", ""): i for c in cats for i in c["items"]}
+def listed(s): return any(s in p for p in paths)
+# 9.4 (1), (2): installed apps, their extensions and an app inside Application Support
+for s in ["com.fixture.installed", "com.fixture.webtool", "WebDeployed"]: assert not listed(s), s
+# 9.4 (4): recent data; found by Spotlight, a launchd label or as a plug-in; running; named like an installed app
+for s in ["org.newvendor.tool", "org.spotvendor.app", "org.labelvendor.app", "org.panevendor.pane",
+          "com.fixture.daemononly", "org.clashvendor.runningapp"]: assert not listed(s), s
+# protected names and plain names without evidence
+for s in ["com.apple.fixture", "com.google.fixture", "1Password", "PlainName"]: assert not listed(s), s
+# 9.4 (3): one High group with every item, named from its settings file
+ed = g["L:org.oldvendor.editor"]
+assert ed["title"] == "Old Editor" and ed["group"] == "Leftovers", ed
+want = {"Application Support/org.oldvendor.editor", "Caches/org.oldvendor.editor", "Caches/org.oldvendor.editor.helper",
+        "Preferences/org.oldvendor.editor.plist", "Saved Application State/org.oldvendor.editor.savedState",
+        "HTTPStorages/org.oldvendor.editor", "WebKit/org.oldvendor.editor", "Cookies/org.oldvendor.editor.binarycookies",
+        "Containers/org.oldvendor.editor", "Group Containers/ABCDE12345.org.oldvendor.editor",
+        "Application Scripts/org.oldvendor.editor", "<root>/Library/Application Support/org.oldvendor.editor"}
+got = {i["path"].replace("<root>/home/Library/", "") for i in ed["items"]}
+assert got == want, got ^ want
+admin = [i for i in ed["items"] if i["path"].startswith("<root>/Library/")][0]
+assert admin["risk"] == "Info" and not admin["selectable"], admin
+# 9.4 (5): nothing is pre-selected; every item is Review or Info; every reason gives the limit
+for c in cats:
+    for i in c["items"]:
+        assert not i["preselected"] and i["risk"] in ("Review", "Info"), i
+        assert "limit" in i["reason"], i
+# Low: same vendor as an installed app, and the folder named like the removed app
+assert g["L:com.fixture.gone"]["group"].startswith("Possible"), g["L:com.fixture.gone"]
+assert [i["path"] for i in g["L:name:org.oldvendor.editor"]["items"]] == ["<root>/home/Library/Application Support/Old Editor"]
+# a container whose metadata names another app stays out
+assert [i["path"] for i in g["L:org.mismatch.app"]["items"]] == ["<root>/home/Library/Application Support/org.mismatch.app"]
+PY
+
+APPMON_FIXTURE_FDA=denied run "$BIN" --leftovers-json > "$WORK/left-nofda.json"
+python3 - "$WORK/left-nofda.json" <<'PY' && ok "leftovers without FDA: containers not entered, notice shown" || bad "leftovers FDA handling"
+import json, sys
+cats = json.load(open(sys.argv[1]))
+assert any(c["id"] == "L-FDA" and c.get("notice") == "Needs Full Disk Access" for c in cats), cats
+assert not any("Containers/" in i["path"] for c in cats for i in c["items"])
+assert any(c["id"] == "L:org.oldvendor.editor" for c in cats)
+PY
+
+APPMON_FIXTURE_SPOTLIGHT=fail run "$BIN" --leftovers-json > "$WORK/left-nospot.json"
+python3 - "$WORK/left-nospot.json" <<'PY' && ok "leftovers without Spotlight: scan completes, nothing unconfirmed listed (9.4: 6)" || bad "leftovers Spotlight failure"
+import json, sys
+cats = json.load(open(sys.argv[1]))
+assert not any(c["id"].startswith("L:") for c in cats), [c["id"] for c in cats]
+assert any(c["id"] == "L-SPOTLIGHT" for c in cats)
+PY
+
+LEFT="home/Library/Application Support/org.oldvendor.editor,home/Library/Caches/org.oldvendor.editor,home/Library/Preferences/org.oldvendor.editor.plist,home/Library/Application Support/com.fixture.gone,Library/Application Support/org.oldvendor.editor"
+before="$(snapshot)"
+APPMON_SELECT="$LEFT" run "$BIN" --leftovers-clean > "$WORK/left-dry.json"
+[ "$before" = "$(snapshot)" ] && ok "leftovers dry run changed nothing" || bad "leftovers dry run changed the tree"
+python3 - "$WORK/left-dry.json" <<'PY' && ok "leftovers dry run: only picked items planned, running vendor and admin items skipped" || bad "leftovers dry run plan"
+import json, sys
+o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
+for k in ["home/Library/Application Support/org.oldvendor.editor", "home/Library/Caches/org.oldvendor.editor",
+          "home/Library/Preferences/org.oldvendor.editor.plist"]:
+    assert o[k]["status"] == "planned", (k, o[k])
+assert o["home/Library/Application Support/com.fixture.gone"]["reason"] == "Running App is running", o   # same vendor, running
+assert o["Library/Application Support/org.oldvendor.editor"]["status"] == "skipped", o     # Info: needs admin
+assert len(o) == 5, o
+PY
+
+APPMON_FIXTURE_ACT=1 APPMON_SELECT="$LEFT" run "$BIN" --leftovers-clean > "$WORK/left-act.json"
+python3 - "$WORK/left-act.json" "$WORK/left.json" "$FIX" <<'PY' && ok "leftovers act: picked items moved, sizes match the scan" || bad "leftovers act"
+import json, os, sys
+o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
+scan = {i["path"].replace("<root>/", ""): i["kb"] for c in json.load(open(sys.argv[2])) for i in c["items"]}
+fix = sys.argv[3]
+moved = [k for k, v in o.items() if v["status"] == "moved"]
+assert len(moved) == 3, o
+for k in moved:
+    assert not os.path.lexists(os.path.join(fix, k)), k
+    assert o[k]["kb"] == scan[k], (k, o[k]["kb"], scan[k])
+for k in ["home/Library/Application Support/com.fixture.gone", "Library/Application Support/org.oldvendor.editor",
+          "home/Library/WebKit/org.oldvendor.editor"]:
+    assert os.path.exists(os.path.join(fix, k)), k
+PY
+run "$BIN" --leftovers-json > "$WORK/left-rescan.json"
+python3 - "$WORK/left-act.json" "$WORK/left-rescan.json" <<'PY' && ok "leftovers re-scan no longer lists moved items" || bad "leftovers re-scan"
+import json, sys
+moved = {x["path"] for x in json.load(open(sys.argv[1])) if x["status"] == "moved"}
+listed = {i["path"] for c in json.load(open(sys.argv[2])) for i in c["items"]}
+assert moved and not (moved & listed), moved & listed
 PY
 
 [ "$fail" = 0 ] && echo "fixture-test: all passed" || { echo "fixture-test: FAILED"; exit 1; }
