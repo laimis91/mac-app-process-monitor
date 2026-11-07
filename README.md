@@ -35,6 +35,11 @@ memory in plain terms.
 - **End or force-quit** a process, a process with all its children, or a whole app, always
   after a confirmation.
 - Search, sort by CPU / GPU / RAM, hide idle child processes, pause.
+- **Disk cleaner** (Disk tab). Finds app caches, old logs and crash reports, old temporary files,
+  Mail attachment copies and developer caches (Xcode, Unity, NuGet, npm, pnpm, Yarn, pip,
+  Homebrew, Docker). Every item says why it was found. Only items marked *Safe* are pre-selected,
+  files go to the Trash through Finder, so Finder's **Put Back** restores them, and tool caches are cleared with the tool's own
+  command, shown to you before it runs. Age limits are adjustable in Settings (⌘,).
 - Lightweight: uses about 1–3% of one CPU core.
 - Native SwiftUI, no dependencies, universal (Apple Silicon and Intel).
 
@@ -73,9 +78,24 @@ click **Open Anyway**.
 
 ## Privacy
 
-App Monitor runs entirely on your Mac. It has no network code, collects nothing, and saves
-nothing to disk. It reads the same information as Activity Monitor: the process list from `ps`,
-memory statistics from the kernel, and GPU statistics from IOKit.
+App Monitor runs entirely on your Mac. It has no network code and collects nothing. The only
+things it saves are the disk cleaner's settings and ignore list, in the app's preferences; scan
+results are never stored. It reads the same information as Activity Monitor: the process list
+from `ps`, memory statistics from the kernel, and GPU statistics from IOKit.
+
+### Moving items to the Trash
+
+The disk cleaner asks Finder to move items to the Trash, so you can restore any of them with
+**Put Back**. The first time you clean, macOS asks whether App Monitor may control Finder. If
+you decline, items are still moved to the Trash, but without Put Back (drag them back instead).
+You can change this in **System Settings → Privacy & Security → Automation**.
+
+### Full Disk Access
+
+The disk cleaner works without it, but skips folders macOS protects (app containers, Mail, the
+Trash) and marks them "Needs Full Disk Access". To include them, switch App Monitor on in
+**System Settings → Privacy & Security → Full Disk Access**. Builds are ad-hoc signed, so macOS
+forgets this permission after each update: switch it off and on again.
 
 ## Demo mode and screenshots
 
@@ -104,11 +124,33 @@ AppMonitor/
   main.swift        data collection: processes, memory, GPU
   Views.swift       UI and theme
   Demo.swift        demo mode and window capture
+  CleanerModel.swift, CleanerViews.swift   Disk tab and Settings window
+  Cleaner/          disk cleaner engine: rules, path guard, scanner, actions
   Icon/             app icon and the script that draws it
   build.sh          builds App Monitor.app
-scripts/            apptop.py, screenshot.sh
-docs/               README screenshot
+scripts/            apptop.py, screenshot.sh, selftest.sh, fixture-test.sh
+docs/               README screenshot, disk cleaner specification
 ```
+
+## Tests
+
+```bash
+scripts/selftest.sh       # disk cleaner logic: path guard, rules, key parsing, settings
+scripts/fixture-test.sh   # scans and cleans a made-up folder tree (its tiny fake files go to your Trash)
+```
+
+## Releases
+
+Pushing a version tag builds the app on GitHub Actions and publishes it on the Releases page
+([`.github/workflows/release.yml`](.github/workflows/release.yml)). The workflow runs the
+self-test, builds a universal app with the tag's version, and uploads `AppMonitor-<version>.zip`.
+
+```bash
+git tag v1.1.0
+git push origin v1.1.0
+```
+
+Local builds use version 1.1.0 unless `APPMON_VERSION` is set.
 
 ## License
 

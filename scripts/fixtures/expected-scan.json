@@ -1,0 +1,275 @@
+[
+  {
+    "group" : "General",
+    "id" : "J-CACHE",
+    "items" : [
+      {
+        "kb" : 40,
+        "path" : "<root>\/home\/Library\/Caches\/PlainName",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 120,
+        "path" : "<root>\/home\/Library\/Caches\/com.fixture.gone",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 400,
+        "path" : "<root>\/home\/Library\/Caches\/com.fixture.installed",
+        "preselected" : true,
+        "risk" : "Safe",
+        "selectable" : true
+      },
+      {
+        "kb" : 40,
+        "path" : "<root>\/home\/Library\/Caches\/com.fixture.installed.share",
+        "preselected" : true,
+        "risk" : "Safe",
+        "selectable" : true
+      },
+      {
+        "kb" : 80,
+        "path" : "<root>\/home\/Library\/Caches\/com.fixture.running",
+        "preselected" : false,
+        "risk" : "Safe",
+        "running" : "Running App",
+        "selectable" : true
+      }
+    ],
+    "method" : "trash"
+  },
+  {
+    "group" : "General",
+    "id" : "J-LOGS",
+    "items" : [
+      {
+        "kb" : 20,
+        "path" : "<root>\/home\/Library\/Logs\/com.fixture.gone",
+        "preselected" : true,
+        "risk" : "Safe",
+        "selectable" : true
+      }
+    ],
+    "method" : "trash"
+  },
+  {
+    "group" : "General",
+    "id" : "J-CRASH",
+    "items" : [
+      {
+        "kb" : 8,
+        "path" : "<root>\/home\/Library\/Logs\/DiagnosticReports\/Old.ips",
+        "preselected" : true,
+        "risk" : "Safe",
+        "selectable" : true
+      }
+    ],
+    "method" : "trash"
+  },
+  {
+    "group" : "General",
+    "id" : "J-TMP",
+    "items" : [
+      {
+        "kb" : 4,
+        "path" : "<root>\/tmp\/held-item",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 12,
+        "path" : "<root>\/tmp\/old-item",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      }
+    ],
+    "method" : "trash"
+  },
+  {
+    "group" : "General",
+    "id" : "J-MAILDL",
+    "items" : [
+      {
+        "kb" : 8,
+        "path" : "<root>\/home\/Library\/Containers\/com.apple.mail\/Data\/Library\/Mail Downloads\/OLD2",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 8,
+        "path" : "<root>\/home\/Library\/Mail Downloads\/OLD-UUID",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      }
+    ],
+    "method" : "trash"
+  },
+  {
+    "group" : "General",
+    "id" : "J-IOSBK",
+    "items" : [
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/Library\/Application Support\/MobileSync\/Backup\/0000-FIXTURE",
+        "preselected" : false,
+        "risk" : "Info",
+        "selectable" : false
+      }
+    ],
+    "method" : "none"
+  },
+  {
+    "group" : "General",
+    "id" : "J-TRASH",
+    "items" : [
+      {
+        "kb" : 4,
+        "path" : "<root>\/home\/.Trash",
+        "preselected" : false,
+        "risk" : "Info",
+        "selectable" : false
+      }
+    ],
+    "method" : "none"
+  },
+  {
+    "group" : "Developer",
+    "id" : "J-XC-DD",
+    "items" : [
+      {
+        "kb" : 64,
+        "path" : "<root>\/home\/Library\/Developer\/Xcode\/DerivedData\/Proj-abc",
+        "preselected" : true,
+        "risk" : "Safe",
+        "selectable" : true
+      }
+    ],
+    "method" : "trash"
+  },
+  {
+    "group" : "Developer",
+    "id" : "J-XC-DS",
+    "items" : [
+      {
+        "kb" : 8,
+        "path" : "<root>\/home\/Library\/Developer\/Xcode\/iOS DeviceSupport\/15.0",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      },
+      {
+        "kb" : 8,
+        "path" : "<root>\/home\/Library\/Developer\/Xcode\/iOS DeviceSupport\/16.4 (20E247)",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      }
+    ],
+    "method" : "trash"
+  },
+  {
+    "group" : "Developer",
+    "id" : "J-UNITY",
+    "items" : [
+      {
+        "kb" : 16,
+        "path" : "<root>\/home\/Library\/Caches\/com.unity3d.fixture",
+        "preselected" : false,
+        "risk" : "Review",
+        "running" : "Unity",
+        "selectable" : true
+      }
+    ],
+    "method" : "trash"
+  },
+  {
+    "group" : "Developer",
+    "id" : "J-UNITY-UPM",
+    "items" : [
+      {
+        "kb" : 8,
+        "path" : "<root>\/home\/Library\/Caches\/Unity\/upm",
+        "preselected" : false,
+        "risk" : "Info",
+        "selectable" : false
+      }
+    ],
+    "method" : "none"
+  },
+  {
+    "command" : [
+      "<root>\/bin\/dotnet nuget locals http-cache --clear"
+    ],
+    "group" : "Developer",
+    "id" : "J-NUGET-HTTP",
+    "items" : [
+      {
+        "kb" : 8,
+        "measures" : "<root>\/home\/.local\/share\/NuGet\/http-cache",
+        "path" : "tool:\/\/J-NUGET-HTTP",
+        "preselected" : false,
+        "risk" : "Safe",
+        "selectable" : true
+      }
+    ],
+    "method" : "tool"
+  },
+  {
+    "command" : [
+      "<root>\/bin\/dotnet nuget locals global-packages --clear"
+    ],
+    "group" : "Developer",
+    "id" : "J-NUGET-PKG",
+    "items" : [
+      {
+        "kb" : 16,
+        "measures" : "<root>\/home\/.nuget\/packages",
+        "path" : "tool:\/\/J-NUGET-PKG",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      }
+    ],
+    "method" : "tool"
+  },
+  {
+    "command" : [
+      "<root>\/bin\/npm cache clean --force"
+    ],
+    "group" : "Developer",
+    "id" : "J-NPM",
+    "items" : [
+      {
+        "kb" : 32,
+        "measures" : "<root>\/home\/.npm\/_cacache",
+        "path" : "tool:\/\/J-NPM",
+        "preselected" : false,
+        "risk" : "Review",
+        "selectable" : true
+      }
+    ],
+    "method" : "tool"
+  },
+  {
+    "group" : "Developer",
+    "id" : "J-DEVCACHE-DIRS",
+    "items" : [
+      {
+        "kb" : 8,
+        "path" : "<root>\/home\/Library\/Caches\/Homebrew",
+        "preselected" : false,
+        "risk" : "Info",
+        "selectable" : false
+      }
+    ],
+    "method" : "none"
+  }
+]

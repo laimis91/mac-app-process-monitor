@@ -1,0 +1,120 @@
+// Installed and running app inventory (spec 9.2). Foundation only: the folder scan lives here,
+// and the AppKit probes (LaunchServices, running apps) are passed in by SystemProbes.swift.
+//
+// Phase 1 uses probes 1 (LaunchServices), 3 (folders), 4 (running) and 6 (embedded bundles).
+// Probes 2 (Spotlight), 5 (launchd labels) and 7 (plug-in folders) arrive with the leftovers
+// finder in phase 3. Missing probes can only make an item Review instead of Safe, never the
+// other way round.
+
+import Foundation
+
+struct AppInfo: Codable, Equatable {
+    let id: String
+    let name: String
+    let path: String
+}
+
+struct RunningApp: Codable, Equatable {
+    let id: String
+    let name: String
+}
+
+final class AppInventory {
+    private(set) var apps: [String: AppInfo] = [:]       // lowercased bundle ID → app
+    private(set) var embedded: [String: AppInfo] = [:]   // embedded bundle ID → its outer app
+    let lookup: ((String) -> AppInfo?)?                  // LaunchServices probe, real mode only
+    let running: () -> [RunningApp]
+
+    init(roots: Roots, lookup: ((String) -> AppInfo?)?, running: @escaping () -> [RunningApp]) {
+        self.lookup = lookup
+        self.running = running
+        var folders: [(String, Int)] = [(roots.applications, 3), (roots.home + "/Applications", 3),
+                                        (roots.systemApplications, 2)]
+        if !roots.fixture {
+            folders += [("/opt/homebrew/Caskroom", 3), ("/usr/local/Caskroom", 3),
+                        (roots.home + "/Library/Application Support/Setapp/Applications", 2)]
+        }
+        for (dir, depth) in folders { scan(dir, depth: depth) }
+    }
+
+    private func scan(_ dir: String, depth: Int) {
+        guard depth > 0, case .ok(let names) = ScanEngine.children(dir) else { return }
+        for n in names {
+            let p = dir + "/" + n
+            guard let st = ScanEngine.lstatInfo(p), (st.st_mode & S_IFMT) == S_IFDIR else { continue }
+            if n.lowercased().hasSuffix(".app") {
+                if let a = Self.info(p) {
+                    apps[a.id.lowercased()] = a
+                    for e in Self.embeddedIDs(p) where apps[e.lowercased()] == nil { embedded[e.lowercased()] = a }
+                }
+            } else {
+                scan(p, depth: depth - 1)
+            }
+        }
+    }
+
+    static func info(_ bundle: String) -> AppInfo? {
+        let plist = bundle + "/Contents/Info.plist"
+        guard let d = NSDictionary(contentsOfFile: plist),
+              let id = d["CFBundleIdentifier"] as? String, !id.isEmpty else { return nil }
+        let name = (d["CFBundleDisplayName"] as? String) ?? (d["CFBundleName"] as? String)
+            ?? URL(fileURLWithPath: bundle).deletingPathExtension().lastPathComponent
+        return AppInfo(id: id, name: name, path: bundle)
+    }
+
+    /// Bundle IDs of helpers, extensions and login items inside an app (probe 6).
+    static func embeddedIDs(_ app: String) -> [String] {
+        var out: [String] = []
+        let c = app + "/Contents"
+        for sub in ["PlugIns", "Library/LoginItems", "Helpers", "XPCServices", "Library/LaunchServices",
+                    "Frameworks"] {
+            guard case .ok(let names) = ScanEngine.children(c + "/" + sub) else { continue }
+            for n in names {
+                if sub == "Frameworks" && !n.lowercased().hasSuffix(".app") { continue }
+                let p = c + "/" + sub + "/" + n
+                if let d = NSDictionary(contentsOfFile: p + "/Contents/Info.plist") ?? NSDictionary(contentsOfFile: p + "/Info.plist"),
+                   let id = d["CFBundleIdentifier"] as? String {
+                    out.append(id)
+                }
+            }
+        }
+        return out
+    }
+
+    /// The installed app that owns `id` (equal, or `id` starts with its ID and a dot).
+    func owner(of id: String) -> AppInfo? {
+        let k = id.lowercased()
+        if let a = apps[k] ?? embedded[k] { return a }
+        // longest matching installed ID wins
+        var best: AppInfo?
+        for (aid, a) in apps where BundleIDs.belongs(k, to: aid) {
+            if best == nil || aid.count > best!.id.count { best = a }
+        }
+        if let best { return best }
+        for (eid, a) in embedded where BundleIDs.belongs(k, to: eid) { return a }
+        if let l = lookup, let a = l(id) { return a }
+        let base = BundleIDs.base(id)
+        if base != id { return owner(of: base) }
+        return nil
+    }
+
+    /// Name of a running app that owns or is owned by one of `ids`, if any.
+    func runningOwner(_ ids: [String], names: [String] = [], snapshot: [RunningApp]) -> String? {
+        for r in snapshot {
+            if ids.contains(where: { BundleIDs.related(r.id, $0) }) { return r.name }
+            if names.contains(where: { $0.caseInsensitiveCompare(r.name) == .orderedSame }) { return r.name }
+        }
+        return nil
+    }
+}
+
+/// Fixture mode: running apps are listed in `<root>/running.txt` as `bundle.id|Name` lines.
+enum FixtureRunning {
+    static func read(_ root: String) -> [RunningApp] {
+        guard let s = try? String(contentsOfFile: root + "/running.txt", encoding: .utf8) else { return [] }
+        return s.split(separator: "\n").compactMap { line in
+            let p = line.split(separator: "|", maxSplits: 1).map(String.init)
+            return p.count == 2 ? RunningApp(id: p[0], name: p[1]) : nil
+        }
+    }
+}
