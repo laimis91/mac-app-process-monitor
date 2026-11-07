@@ -317,6 +317,7 @@ enum SpaceScanner {
                 } else if (st.st_flags & UInt32(SF_DATALESS)) != 0 {
                     _ = fts_set(fts, e, FTS_SKIP)
                     n.note = "In the cloud, not downloaded"
+                    n.flags.insert(.incomplete)               // its folders can't be moved as a whole
                 } else if let why = opts.skip(p) {
                     _ = fts_set(fts, e, FTS_SKIP)
                     n.note = why

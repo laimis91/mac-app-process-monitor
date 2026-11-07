@@ -224,6 +224,7 @@ struct SpaceRow: View {
                 Button { s.ask(node) } label: { Image(systemName: why == nil ? "trash" : "lock") }
                     .buttonStyle(.plain).foregroundStyle(why == nil ? Theme.text : Theme.faint)
                     .help(why.map { "Reveal only: \($0)" } ?? "Move to Trash…")
+                    .disabled(s.acting || s.scanning)
             }
             HeatBar(fraction: Double(node.size) / Double(parentSize), color: old ? Theme.orange : Theme.purple)
                 .frame(width: 120, height: 6)

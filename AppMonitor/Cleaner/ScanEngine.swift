@@ -57,6 +57,8 @@ enum ScanEngine {
         case photos = "Contains a photo library"
         case foreign = "Contains items owned by another user"
         case mount = "Contains a mount point"
+        case cloud = "Contains items stored only in the cloud"
+        case synced = "Contains cloud-synced items. Remove them in Finder, because they would be deleted on every synced device."
     }
 
     /// Whether this entry is always protected. `name` is checked for folders only.
@@ -78,9 +80,19 @@ enum ScanEngine {
     }
 
     /// Measures a file or folder. `links` dedupes hard links across the whole scan. With
-    /// `inspect`, also looks for always-protected contents (Space-map items, 6.4).
-    static func measure(_ path: String, links: LinkSet?, cancel: CancelFlag? = nil, inspect: Bool = false) -> Measure {
+    /// `inspect`, also looks for always-protected contents (Space-map items, 6.4): folders are
+    /// checked with `synced` for cloud sync, and nothing stored only in the cloud is downloaded
+    /// to look at it (S11).
+    static func measure(_ path: String, links: LinkSet?, cancel: CancelFlag? = nil, inspect: Bool = false,
+                        synced: ((String) -> Bool)? = nil) -> Measure {
         var m = Measure()
+        let prevPolicy = inspect ? getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD) : -1
+        if inspect {
+            _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
+        }
+        defer {
+            if prevPolicy >= 0 { _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, prevPolicy) }
+        }
         guard let id = fileID(path) else { m.complete = false; return m }
         m.fileID = id
         var newest: Date? = nil
@@ -111,6 +123,13 @@ enum ScanEngine {
             if inspect, m.protected == nil,
                let k = protectedKind(name: { ftsName(e) }, st, rootDev: rootDev!, uid: uid) {
                 m.protected = k.rawValue
+            }
+            if inspect, m.protected == nil {
+                if (st.st_flags & UInt32(SF_DATALESS)) != 0 {
+                    m.protected = Protected.cloud.rawValue
+                } else if (st.st_mode & S_IFMT) == S_IFDIR, let synced, synced(String(cString: e.pointee.fts_path)) {
+                    m.protected = Protected.synced.rawValue
+                }
             }
             m.entries += 1
             if m.entries <= ageCap {

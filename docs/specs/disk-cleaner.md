@@ -469,8 +469,11 @@ in under 200 ms from cached data.
 - **Measured** on a developer Mac (about 1.9 million entries, without Full Disk Access):
   about 6–15 s, peak memory about 130 MB; drill-down reads cached data (well under 1 ms).
   Folder sizes equalled `du -skx` exactly on the 12 folders compared.
-- **Known limits.** Cloud sync is checked on the item, its parents and the folders two levels
-  below home, not on every file inside a folder. Removing an item doesn't refresh its parents'
+- **Cloud items.** Before moving, every folder inside the item is checked for cloud sync, and
+  anything stored only in the cloud blocks the move; nothing is downloaded to check it. A folder
+  holding a cloud-only folder is not fully scanned, so it can't be moved as a whole.
+- **Known limits.** While scanning, cloud sync is probed only on folders up to two levels below
+  home (the full check runs when the user picks an item). Removing an item doesn't refresh its parents'
   dates or protections until the next scan (which can only make the map more careful).
 
 ---

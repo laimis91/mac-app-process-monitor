@@ -484,6 +484,33 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         check(ScanEngine.measure(r.h("Pictures"), links: nil, inspect: true).protected == "Contains a photo library",
               "measure finds a photo library inside")
         eq(ScanEngine.measure(r.h("Projects/site"), links: nil, inspect: true).protected, nil, "nothing protected in site")
+        check(ScanEngine.measure(r.h("Projects/site"), links: nil, inspect: true,
+                                 synced: { $0.hasSuffix("/src") }).protected?.hasPrefix("Contains cloud-synced") == true,
+              "measure finds a synced folder deep inside")
+        if let site = find("Projects/site") {
+            var syncedEnv = CleanEnvironment(guardian: PathGuard(roots: r), runningNow: { [] },
+                                             inventory: AppInventory(roots: r, lookup: nil, running: { [] }), roots: r,
+                                             dryRun: true, now: Date.init)
+            var sg = SpaceGuard(roots: r)
+            sg.isSynced = { $0.hasSuffix("/src") }
+            syncedEnv.spaceGuard = sg
+            check(Cleaner.clean([SpaceMap.item(site)], env: syncedEnv).first?.reason?.hasPrefix("Contains cloud-synced") == true,
+                  "clean: folder holding a synced folder skipped")
+        }
+
+        // a stopped walk leaves its folders incomplete, so they can't be picked
+        _ = try? fm.createDirectory(atPath: r.h("Bulk"), withIntermediateDirectories: true)
+        for i in 0..<1100 { fm.createFile(atPath: r.h("Bulk/f\(i)"), contents: nil) }
+        let halt = CancelFlag(); halt.set()
+        if let bulk = SpaceScanner.walk(r.h("Bulk"), opts: opts, links: LinkSet(), cancel: halt) {
+            let holder = SpaceNode(name: "x", isDir: true, dev: 0, ino: 0)
+            top.attach(holder)
+            holder.attach(bulk)
+            check(bulk.incomplete && SpaceGuard.reason(for: bulk, home: top) != nil, "stopped walk: refused")
+            check(holder.incomplete && SpaceGuard.reason(for: holder, home: top) != nil,
+                  "a folder holding a not fully scanned folder is refused")
+            top.remove(holder)
+        } else { check(false, "stopped walk returns a node") }
 
         // Cleaner.clean with Space-map items (dry run): every check runs, nothing moves
         let inv = AppInventory(roots: r, lookup: nil, running: { [] })

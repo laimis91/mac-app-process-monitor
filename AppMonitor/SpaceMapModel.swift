@@ -104,6 +104,11 @@ final class SpaceMapModel: ObservableObject {
 
     func goTo(depth: Int) { trail = Array(trail.prefix(depth)); filter = "" }
 
+    /// While a scan or a move is running, nothing else can be moved.
+    var busyReason: String? {
+        scanning ? "Wait for the scan to finish" : acting ? "Wait until the current move has finished" : nil
+    }
+
     /// Why this item is Reveal only, from what the scan recorded; nil if it may be picked.
     func reason(_ n: SpaceNode) -> String? { SpaceGuard.reason(for: n, home: home) }
 
@@ -111,6 +116,7 @@ final class SpaceMapModel: ObservableObject {
 
     /// Checks the item right now (the guard reads the disk), then asks for confirmation.
     func ask(_ n: SpaceNode) {
+        if let busy = busyReason { refusal = Refusal(name: n.name, reason: busy); return }
         if let why = reason(n) { refusal = Refusal(name: n.name, reason: why); return }
         if !demoMode, let roots, let why = SpaceGuard(roots: roots).check(n.path) {
             refusal = Refusal(name: n.name, reason: why); return
@@ -120,13 +126,17 @@ final class SpaceMapModel: ObservableObject {
 
     func trash(_ n: SpaceNode) {
         pending = nil
-        guard !acting, !scanning else { return }
+        if let busy = busyReason { refusal = Refusal(name: n.name, reason: busy); return }
         if demoMode {
             n.parent?.remove(n); version += 1
-            result = Outcome(path: n.path, name: n.name, category: SpaceMap.categoryID, status: .moved, size: n.size)
+            let o = Outcome(path: n.path, name: n.name, category: SpaceMap.categoryID, status: .moved, size: n.size)
+            // Let the confirmation sheet close first, so the result sheet can open.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.result = o }
             return
         }
-        guard let roots, let inventory else { return }
+        guard let roots, let inventory else {
+            refusal = Refusal(name: n.name, reason: "Scan again first: the map isn't ready"); return
+        }
         acting = true
         let env = CleanerConfig.spaceEnvironment(roots, inventory)
         let pair = SpaceMap.item(n)
