@@ -51,7 +51,7 @@ These rules override any feature behaviour described later.
 | # | Rule |
 |---|---|
 | S1 | **Preview first.** Nothing is removed without a results list the user has reviewed and an explicit confirmation step. |
-| S2 | **Trash, not delete.** File removal MUST use `FileManager.trashItem(at:resultingItemURL:)`. `removeItem` MUST NOT be used for user-selected cleanup. The only exception is S3. |
+| S2 | **Trash, not delete.** File removal MUST move items to the Trash: through Finder (an Apple event `core/delo` built from file URLs, never script text), so Finder's Put Back works (decision D8). If macOS refuses Automation access or Finder isn't running, `FileManager.trashItem(at:resultingItemURL:)` is used instead and the summary says those items have no Put Back. `removeItem` MUST NOT be used for user-selected cleanup. The only exception is S3. |
 | S3 | **Official tool commands** (for example `dotnet nuget locals`, `npm cache clean`) remove data permanently. They are a separate action type, labelled "Runs <tool>'s own cleanup, can't be undone", MUST be opt-in, and MUST show the exact command before running it. |
 | S4 | **Protected paths.** The app MUST NOT target anything under `/System`, `/usr` (except `/usr/local`), `/bin`, `/sbin`, `/private/var` (except the current user's own temp folder, rule J-TMP), Apple's shipped apps, or another user's home. Enforced by a central path allow-list (section 6.4), not per feature. |
 | S5 | **Doubt means keep.** If any check is uncertain (a probe fails or times out, a permission error, an unreadable bundle), the item is treated as in use or installed and not offered for cleanup. |
@@ -396,8 +396,8 @@ Developer categories are grouped under **Developer** and hidden when the tool is
 2. Only Safe Trash-method items are pre-selected. No Tool item is pre-selected. Info rows can't
    be selected.
 3. **Clean** moves every selected Trash-method item to the Trash, where the user can restore it.
-   Whether Finder's "Put Back" works for items moved by `trashItem` is to be tested on macOS 14
-   and 15. The UI promises Put Back only if that test passes.
+   Items moved through Finder can be restored with Put Back. Tested on macOS 27: items moved
+   by `trashItem` have no Put Back, which is why Finder is used (decision D8).
 4. A Tool category runs exactly the listed command with fixed arguments, after the
    confirmation sheet showed it.
 5. Items owned by a running app are not cleaned. They appear as "Skipped: <App> is running".
@@ -732,6 +732,7 @@ Decided by the project owner.
 | D5 | Allow Move to Trash from the Space map? | Yes, for user-owned items inside the home folder and outside `~/Library`, picked one at a time, within the Space-map guard (sections 6.4 and 8). |
 | D6 | Age limits user-adjustable? | Yes, in a Settings window with safe minimums (section 4.6). |
 | D7 | Include Low-confidence (name-based) leftovers? | Yes, only with the positive evidence in 9.3, collapsed and never pre-selected. |
+| D8 | Items moved by `trashItem` showed no Put Back. Use Finder instead? | Yes. Move items through Finder so Put Back works; macOS asks once for Automation access. Fall back to `trashItem` (no Put Back) if that's refused. |
 
 ## 15. Known gaps
 
@@ -739,7 +740,7 @@ Decided by the project owner.
   need re-testing on each macOS release.
 - No public API detects APFS clones or purgeable space, so reclaimable sizes are upper bounds.
 - To be tested before relying on them:
-  - Finder "Put Back" for items moved by `trashItem`,
+  - Put Back for Finder-moved items on macOS 14 and 15 (verified on macOS 27 only),
   - whether an FDA check adds the app to the Settings list,
   - how macOS 14+ reacts to reading other apps' containers without FDA.
 - Not verified:

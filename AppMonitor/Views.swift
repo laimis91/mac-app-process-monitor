@@ -330,7 +330,6 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            titleBar
             HStack(alignment: .top, spacing: 12) {
                 CPUPanel().frame(width: 320)
                 GPUPanel().frame(width: 320)
@@ -356,24 +355,6 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 18).padding(.vertical, 8)
         }
-        .foregroundStyle(Theme.text)
-        .background(LinearGradient(colors: [Theme.bgTop, Theme.bg], startPoint: .top, endPoint: .center).ignoresSafeArea())
-        .ignoresSafeArea(.container, edges: .top)   // draw into the hidden title bar strip
-        .preferredColorScheme(.dark)
-        .tint(Theme.purple)
-    }
-
-    var titleBar: some View {
-        HStack(spacing: 10) {
-            Image(nsImage: NSApp?.applicationIconImage ?? NSImage()).resizable().frame(width: 18, height: 18)
-            Text("App Monitor").font(.headline)
-            Chip(text: s.paused ? "PAUSED" : "LIVE", color: s.paused ? Theme.yellow : Theme.green)
-            Spacer()
-        }
-        .padding(.leading, 76)   // sits right of the window buttons
-        .padding(.trailing, 14)
-        .frame(height: 28)                    // same height as the title bar, so it lines up with the buttons
-        .padding(.top, 3).padding(.bottom, 5)  // nudged to the window buttons' centre line
     }
 
     var toolbar: some View {
@@ -633,19 +614,80 @@ struct RowView: View {
     }
 }
 
+// MARK: - Window
+
+enum Tab: String, CaseIterable { case monitor = "Monitor", disk = "Disk" }
+
+struct RootView: View {
+    @EnvironmentObject var s: Sampler
+    @EnvironmentObject var cleaner: CleanerModel
+    @State private var tab: Tab = ProcessInfo.processInfo.environment["APPMON_TAB"] == "disk" ? .disk : .monitor
+
+    var body: some View {
+        VStack(spacing: 0) {
+            titleBar
+            // Both tabs stay alive, so each keeps its own state (spec 4.1).
+            ZStack {
+                ContentView(expanded: demoMode ? Demo.expanded : [])
+                    .opacity(tab == .monitor ? 1 : 0).allowsHitTesting(tab == .monitor)
+                CleanerView()
+                    .opacity(tab == .disk ? 1 : 0).allowsHitTesting(tab == .disk)
+            }
+        }
+        .foregroundStyle(Theme.text)
+        .background(LinearGradient(colors: [Theme.bgTop, Theme.bg], startPoint: .top, endPoint: .center).ignoresSafeArea())
+        .ignoresSafeArea(.container, edges: .top)   // draw into the hidden title bar strip
+        .preferredColorScheme(.dark)
+        .tint(Theme.purple)
+        .onAppear { if tab == .disk { cleaner.activate() } }
+        .onChange(of: tab) { _, t in if t == .disk { cleaner.activate() } }
+    }
+
+    var titleBar: some View {
+        HStack(spacing: 10) {
+            Image(nsImage: NSApp?.applicationIconImage ?? NSImage()).resizable().frame(width: 18, height: 18)
+            Text("App Monitor").font(.headline)
+            Chip(text: s.paused ? "PAUSED" : "LIVE", color: s.paused ? Theme.yellow : Theme.green)
+            Picker("", selection: $tab) {
+                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 160)
+            .padding(.leading, 8)
+            Spacer()
+        }
+        .padding(.leading, 76)   // sits right of the window buttons
+        .padding(.trailing, 14)
+        .frame(height: 28)                    // same height as the title bar, so it lines up with the buttons
+        .padding(.top, 3).padding(.bottom, 5)  // nudged to the window buttons' centre line
+    }
+}
+
 // MARK: - App
 
 @main
 struct AppMonitorApp: App {
     @StateObject private var sampler = Sampler()
+    @StateObject private var cleaner = CleanerModel()
+
+    init() {
+        #if APPMON_DEBUG
+        Headless.runIfRequested()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup("App Monitor") {
-            ContentView(expanded: demoMode ? Demo.expanded : [])
+            RootView()
                 .environmentObject(sampler)
+                .environmentObject(cleaner)
                 .frame(minWidth: 1180, minHeight: 620)
                 .onAppear { if let path = captureTo { captureWindow(to: path) } }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1340, height: 820)
+
+        Settings {
+            SettingsView().environmentObject(cleaner).preferredColorScheme(.dark)
+        }
     }
 }

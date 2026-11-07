@@ -114,3 +114,62 @@ enum Demo {
         exit(0)
     }
 }
+
+// MARK: - Disk tab demo results (made up; shown as ~/… so no real user name appears)
+
+extension Demo {
+    static func diskCategories() -> [Category] {
+        let h = NSHomeDirectory()
+        let now = Date()
+        func ago(_ d: Double) -> Date { now.addingTimeInterval(-d * 86_400) }
+        func item(_ rel: String, _ mb: Double, _ risk: Risk, _ method: Method, age: Double = 12,
+                  _ reason: String, running: String? = nil) -> CleanItem {
+            var i = CleanItem(path: rel.hasPrefix("tool://") ? rel : h + "/" + rel,
+                              name: (rel as NSString).lastPathComponent, size: Int64(mb * 1_048_576),
+                              newest: ago(age), risk: risk, method: method, reason: reason, allowRoot: "", fileID: [])
+            i.runningOwner = running
+            return i
+        }
+        func tool(_ id: String, _ title: String, _ rel: String, _ mb: Double, _ risk: Risk, _ t: String,
+                  _ args: [String], _ why: String) -> Category {
+            var i = item(rel, mb, risk, .tool, why)
+            i = CleanItem(path: i.path, name: title, size: i.size, newest: i.newest, risk: risk, method: .tool,
+                          reason: why, allowRoot: "", fileID: [])
+            return Category(id: id, title: title, group: .developer, method: .tool, explanation: why, items: [i],
+                            tool: ToolCommand(tool: t, commands: [args], preview: nil, executable: "/opt/homebrew/bin/" + t))
+        }
+        return [
+            Category(id: "J-CACHE", title: "App caches", group: .general, method: .trash,
+                     explanation: "Caches apps keep to work faster. Apps re-create them when needed.", items: [
+                item("Library/Caches/com.example.photoeditor", 1840, .safe, .trash, "Cache folder of Photo Editor, an app on this Mac. Apps re-create their caches."),
+                item("Library/Caches/com.example.musicplayer", 612, .safe, .trash, "Cache folder of Music Player, an app on this Mac. Apps re-create their caches.", running: "Music Player"),
+                item("Library/Caches/org.sample.notes", 248, .review, .trash, "Cache folder of org.sample.notes. Its app wasn't found on this Mac, so check it first."),
+                item("Library/Caches/GameLauncher", 1310, .review, .trash, "Cache folder “GameLauncher”. Its app can't be identified by name, so check it first."),
+            ]),
+            Category(id: "J-LOGS", title: "Logs", group: .general, method: .trash, explanation: "Old log files written by apps.", items: [
+                item("Library/Logs/com.example.photoeditor", 96, .safe, .trash, age: 41, "Log files, unchanged for 41 days, limit 7."),
+                item("Library/Logs/GameLauncher", 38, .safe, .trash, age: 19, "Log files, unchanged for 19 days, limit 7."),
+            ]),
+            Category(id: "J-TMP", title: "Old temporary files", group: .general, method: .trash,
+                     explanation: "Files apps left in your temporary folder.", items: [
+                item("tmp-demo/export-4F2A", 420, .review, .trash, age: 9, "Temporary item, unchanged for 9 days, limit 3. Moved only if no app has it open."),
+            ]),
+            Category(id: "J-MAILDL", title: "Mail attachments", group: .general, method: .trash,
+                     explanation: "Copies of attachments you opened from Mail.", items: [], notice: "Needs Full Disk Access"),
+            Category(id: "J-TRASH", title: "Trash", group: .general, method: .none,
+                     explanation: "Empty the Trash in Finder to free this space.", items: [
+                item(".Trash", 2200, .info, .none, "Items already in the Trash. Empty it in Finder to free this space."),
+            ]),
+            Category(id: "J-XC-DD", title: "Xcode DerivedData", group: .developer, method: .trash, explanation: "Build products and indexes.", items: [
+                item("Library/Developer/Xcode/DerivedData/WeatherApp-abcdefgh", 3900, .safe, .trash, "Xcode build data. Xcode rebuilds it on the next build."),
+                item("Library/Developer/Xcode/DerivedData/ModuleCache.noindex", 1150, .safe, .trash, "Xcode build data. Xcode rebuilds it on the next build."),
+            ]),
+            tool("J-NUGET-HTTP", "NuGet download cache", ".local/share/NuGet/http-cache", 2100, .safe, "dotnet",
+                 ["nuget", "locals", "http-cache", "--clear"], "Downloaded package files. NuGet downloads them again when needed."),
+            tool("J-NUGET-PKG", "NuGet packages", ".nuget/packages", 6400, .review, "dotnet",
+                 ["nuget", "locals", "global-packages", "--clear"], "Every project downloads its packages again on next build. Fails if an IDE has projects open."),
+            tool("J-NPM", "npm cache", ".npm/_cacache", 1780, .review, "npm", ["cache", "clean", "--force"],
+                 "Downloaded npm packages. Installs get slower until it fills again."),
+        ]
+    }
+}

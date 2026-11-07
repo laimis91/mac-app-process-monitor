@@ -1,0 +1,90 @@
+#!/bin/bash
+# Builds a throw-away fixture tree for the disk cleaner (spec 13) and prints its path.
+# Everything is fake: made-up apps, folders and files under /private/tmp/appmon-fixture-*.
+set -euo pipefail
+ROOT="$(mktemp -d /private/tmp/appmon-fixture-XXXXXX)"
+H="$ROOT/home"
+OLD=202001010000   # 1 Jan 2020: older than every age limit
+
+file() { mkdir -p "$(dirname "$1")"; head -c "$2" /dev/zero > "$1"; }   # path, bytes
+app() {  # bundle path, bundle ID, name
+  mkdir -p "$1/Contents"
+  cat > "$1/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>$2</string><key>CFBundleName</key><string>$3</string></dict></plist>
+PLIST
+}
+
+# Installed and running apps (fixture-only inventory)
+app "$ROOT/Applications/Fixture App.app" com.fixture.installed "Fixture App"
+app "$ROOT/Applications/Fixture App.app/Contents/PlugIns/Share.appex" com.fixture.installed.share "Share"
+app "$ROOT/Applications/Tools/Running App.app" com.fixture.running "Running App"
+printf 'com.fixture.running|Running App\ncom.unity3d.UnityEditor5.x|Unity\n' > "$ROOT/running.txt"
+
+# J-CACHE and the rules that claim paths under Caches (S14)
+C="$H/Library/Caches"
+file "$C/com.fixture.installed/data" 409600          # Safe, pre-selected
+file "$C/com.fixture.installed.share/data" 40960     # embedded bundle: Safe
+file "$C/com.fixture.running/data" 81920             # Safe, but its app is running
+file "$C/com.fixture.gone/data" 122880               # app not found: Review
+file "$C/PlainName/data" 40960                       # name only: Review
+file "$C/com.apple.fixture/data" 4096                # never listed
+file "$C/Google/data" 4096                           # never listed
+file "$C/Homebrew/downloads/x" 8192                  # J-DEVCACHE-DIRS only
+file "$C/Unity/upm/x" 8192                           # J-UNITY-UPM only; Unity never in J-CACHE
+file "$C/com.unity3d.fixture/x" 16384                # J-UNITY, Unity is running
+mkdir -p "$H/Documents/secret"
+ln -s "$H/Documents" "$C/linked"                     # symlinks are never listed
+
+# Logs, crash reports, temp
+file "$H/Library/Logs/com.fixture.gone/old.log" 20480
+file "$H/Library/Logs/Fresh/new.log" 4096            # too new
+file "$H/Library/Logs/DiagnosticReports/Old.ips" 8192
+file "$H/Library/Logs/DiagnosticReports/New.ips" 4096
+file "$ROOT/tmp/old-item/x" 12288
+file "$ROOT/tmp/held-item/x" 4096                    # kept open during the act test
+file "$ROOT/tmp/new-item/x" 4096
+file "$ROOT/tmp/com.apple.fixture/x" 4096            # never listed
+mkdir -p "$ROOT/tmp/fifo-item" && mkfifo "$ROOT/tmp/fifo-item/pipe"   # holds a pipe: never listed
+file "$C/com.fixture.locked/open/x" 4096             # part unreadable: never listed (S5)
+mkdir -p "$C/com.fixture.locked/closed"
+
+# Xcode
+file "$H/Library/Developer/Xcode/DerivedData/Proj-abc/Build/x" 65536
+for v in "15.0" "16.4 (20E247)" "17.0 (21A329)" "iPhone15,2 17.2 (21C62)" "weird"; do
+  file "$H/Library/Developer/Xcode/iOS DeviceSupport/$v/Symbols/x" 8192
+done
+
+# Mail, backups, Trash
+file "$H/Library/Mail Downloads/OLD-UUID/a.pdf" 8192
+file "$H/Library/Containers/com.apple.mail/Data/Library/Mail Downloads/OLD2/b.pdf" 8192
+mkdir -p "$H/Library/Application Support/MobileSync/Backup/0000-FIXTURE"
+cat > "$H/Library/Application Support/MobileSync/Backup/0000-FIXTURE/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Device Name</key><string>Fixture iPhone</string></dict></plist>
+PLIST
+file "$H/.Trash/thing" 4096
+
+# Developer tool caches and fake tools that only touch this tree
+file "$H/.npm/_cacache/x" 32768
+file "$H/.nuget/packages/x" 16384
+file "$H/.local/share/NuGet/http-cache/x" 8192
+mkdir -p "$ROOT/bin"
+for t in npm dotnet; do
+  cat > "$ROOT/bin/$t" <<'TOOL'
+#!/bin/sh
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+echo "$(basename "$0") $*" >> "$ROOT/tool-log.txt"
+case "$(basename "$0") $*" in
+  "npm cache clean --force") rm -rf "$ROOT/home/.npm/_cacache/"* ;;
+esac
+TOOL
+  chmod +x "$ROOT/bin/$t"
+done
+
+# Dates: everything old, except the "new" items
+find "$ROOT" -exec touch -h -t "$OLD" {} +
+touch "$H/Library/Logs/Fresh/new.log" "$H/Library/Logs/Fresh" "$H/Library/Logs/DiagnosticReports/New.ips" \
+      "$ROOT/tmp/new-item/x" "$ROOT/tmp/new-item"
+chmod 000 "$C/com.fixture.locked/closed"
+echo "$ROOT"
