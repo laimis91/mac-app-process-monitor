@@ -7,6 +7,11 @@ cd "$(dirname "$0")"
 # APPMON_VERSION sets the app version (the release workflow passes the tag, without the "v").
 VERSION="${APPMON_VERSION:-1.1.0}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "APPMON_VERSION must look like 1.2.3" >&2; exit 1; }
+# APPMON_RELEASE=1 (set by the release workflow) refuses to build without a signing identity.
+if [ "${APPMON_RELEASE:-}" = "1" ] && [ -z "${APPMON_SIGN_IDENTITY:-}" ]; then
+  echo "APPMON_RELEASE=1 needs APPMON_SIGN_IDENTITY: release builds must not be ad-hoc signed." >&2
+  exit 1
+fi
 APP="${APPMON_OUT:-App Monitor.app}"   # APPMON_OUT: build somewhere else (fixture tests)
 SOURCES=(main.swift Views.swift Demo.swift CleanerModel.swift CleanerViews.swift
          Cleaner/Model.swift Cleaner/PathGuard.swift Cleaner/Keys.swift Cleaner/ScanEngine.swift
@@ -54,5 +59,28 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 sed -i '' "s/__VERSION__/$VERSION/g" "$APP/Contents/Info.plist"
 
-codesign --force -s - "$APP" >/dev/null   # ad-hoc signature (not notarized)
+# Signing (spec section 11). APPMON_SIGN_IDENTITY names a code-signing identity in your keychain,
+# such as the self-signed "App Monitor Signing" (scripts/make-signing-cert.sh). Without it the
+# build is ad-hoc signed, which is fine for trying things out, but macOS then treats every build
+# as a new app and forgets Full Disk Access. APPMON_SIGN_KEYCHAIN limits the search to one
+# keychain (the release workflow's temporary one). APPMON_RELEASE=1 refuses to sign ad-hoc.
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP/Contents/Info.plist")"
+if [ -n "${APPMON_SIGN_IDENTITY:-}" ]; then
+  SIGN=(--force --sign "$APPMON_SIGN_IDENTITY")
+  [ -n "${APPMON_SIGN_KEYCHAIN:-}" ] && SIGN+=(--keychain "$APPMON_SIGN_KEYCHAIN")
+  echo "Signing with \"$APPMON_SIGN_IDENTITY\"…"
+  codesign "${SIGN[@]}" "$APP"
+  codesign --verify --strict "$APP"
+  # A stable signature's designated requirement names the bundle ID and the certificate.
+  # A cdhash requirement would change with every build and lose Full Disk Access.
+  REQ="$(codesign -d -r- "$APP" 2>&1 | grep '^designated => ' || true)"
+  if [[ "$REQ" != *"identifier \"$BUNDLE_ID\""* || "$REQ" != *certificate* || "$REQ" == *cdhash* ]]; then
+    echo "Signed build has no stable designated requirement: ${REQ:-none}" >&2
+    exit 1
+  fi
+  echo "${REQ}"
+else
+  codesign --force -s - "$APP" >/dev/null
+  echo "Ad-hoc signed (set APPMON_SIGN_IDENTITY to keep Full Disk Access across builds)."
+fi
 echo "Built: $(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
