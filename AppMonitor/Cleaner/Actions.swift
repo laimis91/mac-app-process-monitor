@@ -190,6 +190,8 @@ struct CleanEnvironment {
     /// or the FileManager mover (no Put Back) if Finder can't be used.
     var prepareTrash: () -> ([String]) -> [String: TrashResult] = { Cleaner.trashWithFileManager }
     var batchSize = 100
+    /// Checks items picked in the Space map instead of the rule-based path guard (6.4).
+    var spaceGuard: SpaceGuard? = nil
 }
 
 enum Cleaner {
@@ -229,8 +231,9 @@ enum Cleaner {
 
             // Slow checks first: (d) age limit, readability and sockets, then (c) open files.
             do {
-                let m = ScanEngine.measure(item.path, links: nil)
+                let m = ScanEngine.measure(item.path, links: nil, inspect: item.spaceMap)
                 guard m.complete else { skip("Part of it can't be read"); continue }
+                if let why = m.protected { skip(why); continue }
                 guard !m.special else { skip("Contains a socket or pipe an app may be using"); continue }
                 guard !m.locked else { skip("Contains a locked file"); continue }
                 if let st = ScanEngine.lstatInfo(item.path), !userCanMove(item.path, st) {
@@ -318,11 +321,15 @@ enum Cleaner {
     }
 
     /// The quick checks, run right before acting: (b) owner not running, (a) path guard, (e) same item.
+    /// Space-map items use the Space-map guard, which also checks the volume (6.4).
     static func lastChecks(_ item: CleanItem, _ env: CleanEnvironment) -> String? {
         if let app = env.inventory.runningOwner(item.owners, names: item.ownerNames, snapshot: env.runningNow()) {
             return "\(app) is running"
         }
-        if let why = env.guardian.check(item.path, allowRoot: item.allowRoot) { return why }
+        if item.spaceMap {
+            guard let g = env.spaceGuard else { return "No Space-map guard" }
+            if let why = g.check(item.path) { return why }
+        } else if let why = env.guardian.check(item.path, allowRoot: item.allowRoot) { return why }
         if ScanEngine.fileID(item.path) != item.fileID { return "Changed since the scan" }
         return nil
     }

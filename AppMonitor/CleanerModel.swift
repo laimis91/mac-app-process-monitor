@@ -3,8 +3,12 @@
 import SwiftUI
 import AppKit
 
+/// The Disk tab's views (spec 4.2). Leftovers arrive in phase 3.
+enum DiskView: String, CaseIterable { case junk = "Junk", spaceMap = "Space map" }
+
 @MainActor
 final class CleanerModel: ObservableObject {
+    @Published var view: DiskView = ProcessInfo.processInfo.environment["APPMON_DISKVIEW"] == "space" ? .spaceMap : .junk
     @Published var categories: [Category] = []
     @Published var scanning = false
     @Published var progress = ""

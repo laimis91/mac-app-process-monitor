@@ -11,7 +11,8 @@ APP="${APPMON_OUT:-App Monitor.app}"   # APPMON_OUT: build somewhere else (fixtu
 SOURCES=(main.swift Views.swift Demo.swift CleanerModel.swift CleanerViews.swift
          Cleaner/Model.swift Cleaner/PathGuard.swift Cleaner/Keys.swift Cleaner/ScanEngine.swift
          Cleaner/InstalledApps.swift Cleaner/Rules.swift Cleaner/Actions.swift Cleaner/Permissions.swift
-         Cleaner/SystemProbes.swift Cleaner/Headless.swift)
+         Cleaner/SystemProbes.swift Cleaner/Headless.swift Cleaner/SpaceMap.swift
+         SpaceMapModel.swift SpaceMapViews.swift)
 # APPMON_DEBUG=1 compiles in the developer switches (fixture roots, headless scan). Release builds never set it.
 FLAGS=(-O)
 [ "${APPMON_DEBUG:-}" = "1" ] && FLAGS+=(-D APPMON_DEBUG)

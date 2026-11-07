@@ -668,6 +668,7 @@ struct RootView: View {
 struct AppMonitorApp: App {
     @StateObject private var sampler = Sampler()
     @StateObject private var cleaner = CleanerModel()
+    @StateObject private var space = SpaceMapModel()
 
     init() {
         #if APPMON_DEBUG
@@ -680,6 +681,7 @@ struct AppMonitorApp: App {
             RootView()
                 .environmentObject(sampler)
                 .environmentObject(cleaner)
+                .environmentObject(space)
                 .frame(minWidth: 1180, minHeight: 620)
                 .onAppear { if let path = captureTo { captureWindow(to: path) } }
         }

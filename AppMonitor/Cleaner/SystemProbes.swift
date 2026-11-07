@@ -71,6 +71,16 @@ enum CleanerConfig {
     }
 }
 
+extension CleanerConfig {
+    /// Cleaning one item picked in the Space map: the Space-map guard instead of the rule roots.
+    static func spaceEnvironment(_ roots: Roots, _ inv: AppInventory) -> CleanEnvironment {
+        var env = CleanEnvironment(guardian: PathGuard(roots: roots), runningNow: inv.running, inventory: inv,
+                                   roots: roots, dryRun: dryRun, now: Date.init, prepareTrash: FinderTrash.prepare)
+        env.spaceGuard = SpaceGuard(roots: roots)
+        return env
+    }
+}
+
 /// Moves items to the Trash through Finder, so Finder's Put Back returns them where they were.
 /// The Apple event is built from file URLs (no script text). macOS asks once whether App Monitor
 /// may control Finder. If that's declined or Finder isn't running, items are moved with

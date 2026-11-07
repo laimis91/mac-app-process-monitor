@@ -227,6 +227,7 @@ A Settings window (App menu → Settings…, ⌘,) with:
 | `Cleaner/LeftoverMatcher.swift` | Matches folders to apps; orphan decision (phase 3) |
 | `Cleaner/Actions.swift` | Trash mover, tool-command runner, path guard |
 | `Cleaner/Permissions.swift` | FDA detection and the Settings link |
+| `Cleaner/SpaceMap.swift` | Space map tree, scanner and Space-map guard (phase 2, section 8.1) |
 | `CleanerViews.swift` | Disk tab UI |
 | `Demo.swift` (extended) | Demo results for screenshots |
 
@@ -433,6 +434,40 @@ A read-only view of where space goes, to help users find large things the rules 
 
 **Acceptance:** sizes match `du -kx` (disk usage, one volume) to within 2%; drill-down responds
 in under 200 ms from cached data.
+
+### 8.1 Implementation (phase 2)
+
+- `Cleaner/SpaceMap.swift` (AppKit-free): the tree (`SpaceNode`), the scanner and the
+  Space-map guard. `SpaceMapModel.swift` and `SpaceMapViews.swift` hold the Disk tab's
+  **Space map** view, chosen with the **Junk | Space map** switch in the toolbar.
+- **Scan.** One `fts` walk per folder (`FTS_PHYSICAL | FTS_XDEV`), up to 4 folders at a time:
+  each child of the home folder and of `~/Library`, and `/Applications`. Sizes are allocated
+  blocks of every entry, folders included, with hard links counted once per scan, so they equal
+  `du -kx`. The scan thread never downloads cloud ("dataless") files or folders
+  (`IOPOL_MATERIALIZE_DATALESS_FILES_OFF`); such folders show "In the cloud, not downloaded".
+  Without Full Disk Access, `~/Library/Containers` and `~/Library/Group Containers` are not
+  entered (see 9.1) and show "Needs Full Disk Access".
+- **Memory.** Each folder lists its 100 largest entries; the rest are shown as one "N smaller
+  items" row. Folders under 1 MB keep their totals but don't list their contents. Totals and
+  protections still count everything.
+- **Labels.** An `.app` bundle is labelled with its own name and icon. A folder named by bundle
+  ID resolves through `InstalledApps`. Inside `~/Library`, a folder named exactly like an
+  installed app belongs to it.
+- **Before picking.** Each row shows why it is Reveal only, from what the scan recorded
+  (the same rules as the guard). Choosing Move to Trash runs the full guard on the disk first,
+  then shows the confirmation with the full path and size.
+- **Acting.** The item goes through `Cleaner.clean` as a single item, with the Space-map guard
+  in place of the rule roots, the unchanged `fileResourceIdentifier`, the open-file snapshot,
+  and a fresh walk that refuses always-protected contents (an app, a photo library, another
+  user's item, a mount point), sockets and locked files. Finder's Put Back works as in phase 1.
+- **Cache.** The last scan stays in memory until the app quits; its age is shown. After a move,
+  the totals of every parent folder are updated without a re-scan.
+- **Measured** on a developer Mac (about 1.9 million entries, without Full Disk Access):
+  about 6–15 s, peak memory about 130 MB; drill-down reads cached data (well under 1 ms).
+  Folder sizes equalled `du -skx` exactly on the 12 folders compared.
+- **Known limits.** Cloud sync is checked on the item, its parents and the folders two levels
+  below home, not on every file inside a folder. Removing an item doesn't refresh its parents'
+  dates or protections until the next scan (which can only make the map more careful).
 
 ---
 
@@ -718,6 +753,11 @@ The repo has no automated tests today.
   skip, an app started between scan and clean (S13), Put Back behaviour on macOS 14 and 15,
   missing tools and missing Command Line Tools.
 - **Demo mode** gains made-up Disk results, so README screenshots never show real paths.
+- **Space map** (phase 2): `scripts/selftest.sh` checks the Space-map guard rules and its disk
+  checks, sizes against `du -kx`, hard links, listing limits, roll-up of totals and
+  protections, and one-item clean dry runs. `scripts/fixture-test.sh` adds a Space-map scan of the
+  fixture tree (`--space-json`, sizes against `du -kx`, labels, Reveal-only reasons) and a
+  one-item dry run and act (`--space-trash`), including an item kept open.
 
 ---
 
