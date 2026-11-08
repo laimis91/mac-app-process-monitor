@@ -209,7 +209,7 @@ struct MemoryPanel: View {
         Panel(title: "MEMORY", icon: "memorychip") {
             HStack(alignment: .top, spacing: 16) {
                 Ring(value: usedFrac, color: Theme.heat(usedFrac * 0.9), label: gb(m.available).replacingOccurrences(of: " GB", with: ""),
-                     caption: "GB FREE")
+                     caption: "GB AVAILABLE")
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline) {
                         Text(gb(m.available)).font(.system(size: 20, weight: .bold, design: .monospaced)).foregroundStyle(Theme.text)
@@ -301,12 +301,14 @@ struct ContentView: View {
     struct Row: Identifiable { let node: Node; let depth: Int; var id: String { node.id } }
 
     func sorted(_ n: [Node]) -> [Node] {
-        n.sorted {
+        n.sorted { a, b in
             switch sort {
-            case .cpu: return ($0.cpu, $0.rssKB) > ($1.cpu, $1.rssKB)
-            case .gpu: return ($0.gpu, $0.cpu) > ($1.gpu, $1.cpu)
-            case .ram: return ($0.rssKB, $0.cpu) > ($1.rssKB, $1.cpu)
+            case .cpu: if (a.cpu, a.rssKB) != (b.cpu, b.rssKB) { return (a.cpu, a.rssKB) > (b.cpu, b.rssKB) }
+            case .gpu: if (a.gpu, a.cpu, a.rssKB) != (b.gpu, b.cpu, b.rssKB) { return (a.gpu, a.cpu, a.rssKB) > (b.gpu, b.cpu, b.rssKB) }
+            case .ram: if (a.rssKB, a.cpu) != (b.rssKB, b.cpu) { return (a.rssKB, a.cpu) > (b.rssKB, b.cpu) }
             }
+            // Equal on the sort key: a fixed order, so rows don't swap places between samples.
+            return (a.title, a.id) < (b.title, b.id)
         }
     }
 
@@ -578,26 +580,45 @@ struct RowView: View {
         return "“\(t)”"
     }
 
+    static let changedMessage = "It has already quit, or its process ID now belongs to another process, so it was left alone."
+
     func quitApp(force: Bool) {
+        // The pid must still be the process we sampled: pids are reused.
+        guard stillSameProcess(node.pid, node.identity) else {
+            killError = kill(node.pid, 0) != 0 && errno == EPERM
+                ? "macOS didn't allow ending it. It belongs to the system or another user." : RowView.changedMessage
+            refreshSoon(); return
+        }
         if let app = NSRunningApplication(processIdentifier: node.pid) {
             _ = force ? app.forceTerminate() : app.terminate()
             refreshSoon()
-        } else {
+        } else if quitSignalAllowed(exe: executablePath(node.pid), appBundle: node.appBundle, groupKey: node.title) {
             send(force ? SIGKILL : SIGTERM, tree: false)
+        } else {
+            killError = "Its main process isn't part of \(node.title), so it was left alone."
         }
     }
 
     /// Sends a signal to this process, or to it and everything under it (children first).
+    /// Skips any pid whose parent or start time changed since the sample.
     func send(_ sig: Int32, tree: Bool) {
-        var pids: [Int32] = []
-        func collect(_ n: Node) { n.kids.forEach(collect); if n.pid > 0 { pids.append(n.pid) } }
-        if tree { collect(node) } else { pids = [node.pid] }
-        var denied = 0
-        for p in pids where p != getpid() {
-            if kill(p, sig) != 0 && errno == EPERM { denied += 1 }
+        var targets: [Node] = []
+        func collect(_ n: Node) { n.kids.forEach(collect); if n.pid > 0 { targets.append(n) } }
+        if tree { collect(node) } else { targets = [node] }
+        var denied = 0, changed = 0
+        for n in targets where n.pid != getpid() {
+            guard stillSameProcess(n.pid, n.identity) else {
+                // Another user's process can't be read, so it can't be checked: report it as denied.
+                if kill(n.pid, 0) != 0 && errno == EPERM { denied += 1 } else { changed += 1 }
+                continue
+            }
+            if kill(n.pid, sig) != 0 && errno == EPERM { denied += 1 }
         }
         if denied > 0 {
-            killError = "macOS didn't allow ending \(denied == pids.count ? "it" : "\(denied) of \(pids.count) processes"). It belongs to the system or another user."
+            killError = "macOS didn't allow ending \(denied == targets.count ? "it" : "\(denied) of \(targets.count) processes"). It belongs to the system or another user."
+        } else if changed > 0 {
+            killError = changed == targets.count ? RowView.changedMessage
+                : "\(changed) of \(targets.count) processes had already quit or changed, so they were left alone."
         }
         refreshSoon()
     }

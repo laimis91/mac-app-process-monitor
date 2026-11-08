@@ -19,6 +19,7 @@ SOURCES=(main.swift Views.swift Demo.swift CleanerModel.swift CleanerViews.swift
          Cleaner/SystemProbes.swift Cleaner/Headless.swift Cleaner/SpaceMap.swift
          Cleaner/LeftoverMatcher.swift Cleaner/Leftovers.swift Cleaner/Uninstaller.swift
          SpaceMapModel.swift SpaceMapViews.swift)
+SOURCES+=(ProcessTree.swift)   # process ownership, also compiled by scripts/grouping-test.sh
 # APPMON_DEBUG=1 compiles in the developer switches (fixture roots, headless scan). Release builds never set it.
 FLAGS=(-O)
 [ "${APPMON_DEBUG:-}" = "1" ] && FLAGS+=(-D APPMON_DEBUG)

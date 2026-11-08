@@ -67,6 +67,7 @@ struct IconView: View {
             p.arguments = ["-z", "\(px)", "\(px)", src.path, "--out", set.appendingPathComponent(name).path]
             p.standardOutput = FileHandle.nullDevice
             try p.run(); p.waitUntilExit()
+            if p.terminationStatus != 0 { fail("sips failed for \(name) (exit \(p.terminationStatus))", set) }
         }
     }
     try FileManager.default.removeItem(at: src)
@@ -75,8 +76,15 @@ struct IconView: View {
     ic.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
     ic.arguments = ["-c", "icns", set.path, "-o", out.appendingPathComponent("AppIcon.icns").path]
     try ic.run(); ic.waitUntilExit()
+    if ic.terminationStatus != 0 { fail("iconutil failed (exit \(ic.terminationStatus))", set) }
     try? FileManager.default.removeItem(at: set)
     print("Wrote \(out.path)/AppIcon.icns")
+}
+
+func fail(_ message: String, _ set: URL) -> Never {
+    try? FileManager.default.removeItem(at: set)
+    FileHandle.standardError.write("MakeIcon: \(message)\n".data(using: .utf8)!)
+    exit(1)
 }
 
 try MainActor.assumeIsolated { try run() }
