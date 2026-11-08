@@ -642,7 +642,15 @@ enum Tab: String, CaseIterable { case monitor = "Monitor", disk = "Disk" }
 struct RootView: View {
     @EnvironmentObject var s: Sampler
     @EnvironmentObject var cleaner: CleanerModel
-    @State private var tab: Tab = ProcessInfo.processInfo.environment["APPMON_TAB"] == "disk" ? .disk : .monitor
+    @State private var tab: Tab = RootView.firstTab
+
+    /// APPMON_TAB=disk opens the Disk tab (debug builds only).
+    static var firstTab: Tab {
+        #if APPMON_DEBUG
+        if ProcessInfo.processInfo.environment["APPMON_TAB"] == "disk" { return .disk }
+        #endif
+        return .monitor
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -704,7 +712,11 @@ struct AppMonitorApp: App {
                 .environmentObject(cleaner)
                 .environmentObject(space)
                 .frame(minWidth: 1180, minHeight: 620)
-                .onAppear { if let path = captureTo { captureWindow(to: path) } }
+                .onAppear {
+                    #if APPMON_DEBUG
+                    if let path = captureTo { captureWindow(to: path) }
+                    #endif
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1340, height: 820)

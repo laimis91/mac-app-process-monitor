@@ -47,6 +47,7 @@ func readProcs() -> [Int32: RawProc] {
               let cpu = Double(f[2]), let rss = Int(f[3]) else { continue }
         procs[pid] = RawProc(pid: pid, ppid: ppid, cpu: cpu, rssKB: rss, exe: exe)
         started[pid] = f[4...8].joined(separator: " ")
+        procs[pid]?.lstart = started[pid] ?? ""
     }
     for line in runPS("pid=,lstart=,args=").split(separator: "\n") {
         guard let (f, args) = fields(line, 6), let pid = Int32(f[0]),
@@ -54,6 +55,21 @@ func readProcs() -> [Int32: RawProc] {
         procs[pid]?.args = args
     }
     return procs
+}
+
+/// True if ps's start time (lstart in the C locale, "Sat Nov 8 03:29:00 2026", local time) is
+/// the second `sec`. `sec` is formatted the way ps prints it rather than lstart parsed, so no
+/// daylight-saving hour is ambiguous.
+func sameStart(_ lstart: String, _ sec: UInt64) -> Bool {
+    guard !lstart.isEmpty else { return false }
+    var t = time_t(sec)
+    var tm = tm()
+    guard localtime_r(&t, &tm) != nil, (0..<7).contains(tm.tm_wday), (0..<12).contains(tm.tm_mon) else { return false }
+    let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    let text = "\(days[Int(tm.tm_wday)]) \(months[Int(tm.tm_mon)]) \(tm.tm_mday) "
+        + String(format: "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec) + " \(Int(tm.tm_year) + 1900)"
+    return text == lstart
 }
 
 /// Helper bundles inside an app often have no icon; then the outer app's icon is more useful.
@@ -170,7 +186,8 @@ func buildGroups(gpu: [Int32: Double] = [:]) -> [Node] {
                               tooltip: "PID \(pid)\n\(p.args.isEmpty ? p.exe : p.args)",
                               iconPath: inApp.map { hasOwnIcon($0) ? $0 : (outerAppPath(p.exe) ?? $0) }, isGroup: false, ownCPU: p.cpu, ownRSS: p.rssKB)
             nodes[pid]?.pid = pid
-            nodes[pid]?.identity = procIdentity(pid)
+            // Only if the pid still is the process ps listed: a pid reused since then gets no identity.
+            nodes[pid]?.identity = procIdentity(pid).flatMap { sameStart(p.lstart, $0.startSec) ? $0 : nil }
             nodes[pid]?.command = p.args.isEmpty ? p.exe : p.args
             nodes[pid]?.ownGPU = gpu[pid] ?? 0
         }

@@ -11,6 +11,7 @@ struct RawProc {
     let rssKB: Int
     let exe: String
     var args: String = ""
+    var lstart: String = ""         // ps start time, fields joined by one space (C locale)
 }
 
 func outerAppPath(_ exe: String) -> String? {

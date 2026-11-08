@@ -51,7 +51,7 @@ These rules override any feature behaviour described later.
 | # | Rule |
 |---|---|
 | S1 | **Preview first.** Nothing is removed without a results list the user has reviewed and an explicit confirmation step. |
-| S2 | **Trash, not delete.** File removal MUST move items to the Trash: through Finder (an Apple event `core/delo` built from file URLs, never script text), so Finder's Put Back works (decision D8). If macOS refuses Automation access or Finder isn't running, `FileManager.trashItem(at:resultingItemURL:)` is used instead and the summary says those items have no Put Back. `removeItem` MUST NOT be used for user-selected cleanup. The only exception is S3. |
+| S2 | **Trash, not delete.** File removal MUST move items to the Trash: through Finder (an Apple event `core/delo` built from file reference URLs, never script text), so Finder's Put Back works (decision D8). A file reference URL names the file itself, so a folder above an item that is swapped for a symlink after the checks can't redirect the move. If macOS refuses Automation access or Finder isn't running, `FileManager.trashItem(at:resultingItemURL:)` is used instead and the summary says those items have no Put Back. `removeItem` MUST NOT be used for user-selected cleanup. The only exception is S3. |
 | S3 | **Official tool commands** (for example `dotnet nuget locals`, `npm cache clean`) remove data permanently. They are a separate action type, labelled "Runs <tool>'s own cleanup, can't be undone", MUST be opt-in, and MUST show the exact command before running it. |
 | S4 | **Protected paths.** The app MUST NOT target anything under `/System`, `/usr` (except `/usr/local`), `/bin`, `/sbin`, `/private/var` (except the current user's own temp folder, rule J-TMP), Apple's shipped apps, or another user's home. Enforced by a central path allow-list (section 6.4), not per feature. |
 | S5 | **Doubt means keep.** If any check is uncertain (a probe fails or times out, a permission error, an unreadable bundle), the item is treated as in use or installed and not offered for cleanup. |
@@ -62,7 +62,7 @@ These rules override any feature behaviour described later.
 | S10 | **Honest sizes.** Reclaimable sizes use allocated size with hard links counted once. Totals are labelled as estimates where APFS clones or snapshots can make the real gain smaller (section 6.2). |
 | S11 | **No network, minimal storage.** The cleaner sends nothing anywhere. Rule data is bundled in the app. Only settings (age limits, section 4.6) and the user's ignore list are stored, in `UserDefaults`. Scan results are never stored. |
 | S12 | **Symlinks.** Scans MUST NOT follow symbolic links or cross onto another volume. A selected item that is a symlink is moved to the Trash as the link itself, never its target. An item whose *parent chain* contains a symlink is dropped. |
-| S13 | **Re-check at action time.** Immediately before acting on each item, re-check: (a) the path guard (6.4), (b) the owning app is not running, (c) no file inside is open (temp and cache items only), checked against one open-file snapshot taken per Clean: for each process of the current user, its open files (`PROC_PIDLISTFDS` + `PROC_PIDFDVNODEPATHINFO`), working directory and memory-mapped files, matched by path prefix. If the snapshot can't be taken, those items are skipped (S5). Processes of root and other users are not visible, which is an accepted limit, (d) the newest modification date still meets the rule's age limit, (e) the item's identity, its `lstat` (`st_dev`, `st_ino`) pair, is unchanged since the scan. Any failed check skips the item with its reason. The checks run again after the user uses a [Quit] button. |
+| S13 | **Re-check at action time.** Immediately before acting on each item, re-check: (a) the path guard (6.4), (b) the owning app is not running, (c) no file inside is open (temp and cache items only), checked against one open-file snapshot taken per Clean: for each process of the current user, its open files (`PROC_PIDLISTFDS` + `PROC_PIDFDVNODEPATHINFO`), working directory and memory-mapped files, matched by path prefix. If the snapshot can't be taken, those items are skipped (S5). Processes of root and other users are not visible, which is an accepted limit, (d) the newest modification date still meets the rule's age limit, (e) the item's identity, its `lstat` (`st_dev`, `st_ino`) pair, is unchanged since the scan. Any failed check skips the item with its reason. The checks run again after the user uses a [Quit] button. (a) and (e) run once more for each item right before it is handed to Finder or `FileManager` (at most 25 items per Finder request). After the move, each item is looked for in the Trash by (`st_dev`, `st_ino`); one that left its place but isn't found there is reported "Moved, but not found in the Trash: check it". A hard-linked file (whose reference could resolve to another link) and the `FileManager` fallback use the path: then the item's folder is first opened without following any symlink on its path (`O_DIRECTORY` and `O_NOFOLLOW_ANY`) and checked with `fstat` and `fstatat` to be the folder just checked, holding the same item. |
 | S14 | **Most specific rule wins.** Each path belongs to exactly one rule. A general rule (for example "children of `~/Library/Caches`") excludes every path claimed by a more specific rule, **and every parent folder of such a path** (so `Caches/Unity` is never offered when `Caches/Unity/upm` is claimed). |
 
 ---
@@ -352,13 +352,61 @@ produce it.
 
 ### 6.5 Tool command runner
 
-- Find the executable at known absolute paths, in order: `/opt/homebrew/bin`, `/usr/local/bin`,
-  `/usr/local/share/dotnet`, `~/.dotnet`, then `/usr/bin`. Never look it up through a shell.
-- Run with `Process`, using a fixed argument array (no shell, no string interpolation into
-  commands) and a 5-minute timeout. Capture stdout and stderr for the result summary.
-- Set `PATH` in the child's environment to the tool's own folder followed by
-  `/usr/bin:/bin`, because GUI apps inherit a minimal `PATH` and tools like `npm`, `yarn` and
-  `pnpm` start with `#!/usr/bin/env node`.
+- **Lookup.** Each tool is looked for only in its own folders, in order, never through a shell or
+  `PATH` (`ToolLocator.realPlaces`):
+
+  | Tool | Folders | A symlinked executable may resolve into |
+  |---|---|---|
+  | `xcrun`, `python3` | `/usr/bin` | (no symlink) |
+  | `dotnet` | `/usr/local/share/dotnet`, `~/.dotnet` | the same folder |
+  | `brew`, `npm`, `yarn`, `pnpm` | `/opt/homebrew/bin`, `/usr/local/bin` | `/opt/homebrew`, `/usr/local` |
+  | `docker` | `/opt/homebrew/bin`, `/usr/local/bin` | those, and `/Applications/Docker.app/Contents/Resources` |
+
+  `python3` is only the Command Line Tools' `/usr/bin/python3`: every Python's
+  `pip cache purge` empties the same `~/Library/Caches/pip`, which is the folder the row measures,
+  so another Python adds nothing but another place to plant one.
+- **Trust** (`ToolTrust`). An executable is used only if its folder is reached without a symlink,
+  a symlinked executable resolves into its place's targets, the real file is a regular
+  executable file, and every folder from `/` down to the tool's folder and to the real file, and
+  the file itself, is owned by root or the user and is not writable by other users or by its
+  group. Two exceptions, both by design of macOS or Homebrew: the `admin` group may write
+  (`/opt/homebrew/bin` and `/Applications` are group-writable by `admin`), and a root-owned
+  sticky folder (`/private/tmp`, used by the fixture tree) is accepted. A refused executable is
+  treated as missing, and the next folder is tried. The checks run again right before the tool
+  runs, including its preview.
+- **No tool runs during a scan.** A tool row is shown when its executable passes the lookup and
+  its cache folder exists. Docker has no folder: its row is shown when `docker` is found, without
+  a size, and its commands report an error if Docker isn't running. Simulators are read from
+  `~/Library/Developer/CoreSimulator/Devices/*/device.plist`: the row is shown when there is at
+  least one simulator, without a count (only `simctl` knows which are unavailable), and a
+  simulator whose `state` isn't "shut down" blocks it. The only program run during a scan is
+  `/usr/bin/xcode-select -p` (below).
+- **Previews are tool runs.** Only `brew cleanup -n --prune=all` (J-BREW) has one. It runs from
+  the confirmation sheet, after the user chose to clean, and only for a tool that passed the
+  lookup, checked again right before.
+- **Running.** `posix_spawn` with a fixed argument array (no shell, no string interpolation into
+  commands), stdin from `/dev/null`, stdout and stderr captured for the result summary, no other
+  descriptor inherited (`POSIX_SPAWN_CLOEXEC_DEFAULT`), default signal handling, and a 5-minute
+  timeout.
+- **Environment.** The child gets a fresh environment, nothing else of App Monitor's: `HOME`,
+  `USER` and `LOGNAME` from the user database, `TMPDIR` the user's temp folder, `LANG` and `LC_*`
+  only when the value is a plain locale name, `NO_COLOR=1`, and `PATH` set to the tool's own folder
+  followed by `/usr/bin:/bin` (GUI apps inherit a minimal `PATH`, and `npm`, `yarn` and `pnpm`
+  start with `#!/usr/bin/env node`). Variables set with `launchctl setenv` (`DEVELOPER_DIR`,
+  `NODE_OPTIONS`, `BASH_ENV`, `PYTHONPATH`, `DOTNET_STARTUP_HOOKS`, `DYLD_*`, …) never reach a
+  tool.
+- **Privacy permissions.** macOS treats a child process as App Monitor's for privacy checks, so a
+  tool would use App Monitor's Full Disk Access. Tools are started with
+  `responsibility_spawnattrs_setdisclaim` (private API in libSystem, looked up with `dlsym`), which
+  makes the child responsible for itself: it gets only the permissions macOS gave the tool. Checked
+  on macOS 27: from a process that can list `~/Library/Safari`, a child started this way can't,
+  one started without it can, and `responsibility_get_pid_responsible_for_pid` names the child
+  itself (`scripts/selftest.sh` checks both when it has Full Disk Access). If the function is
+  missing in a later macOS, tools still run, and then have App Monitor's permissions.
+- **Remaining risk.** Homebrew's folders and `~/.dotnet` belong to the user, so any program the
+  user runs can replace a tool there, between the check and the run too. Such a tool then runs as
+  the user, after the user confirmed the clean, without App Monitor's privacy permissions
+  (unless the disclaim function is missing). This is no more than that program could do itself.
 - `/usr/bin/python3`, `/usr/bin/xcrun` and other `/usr/bin` developer tools are stubs that open
   an install dialog when the Command Line Tools are missing. Call them only if
   `xcode-select -p` succeeds.
@@ -388,9 +436,9 @@ Per S14, each general row excludes the paths claimed by more specific rows.
 | J-YARN | Yarn cache | `yarn cache clean` | Tool | Review | |
 | J-PIP | pip cache | `python3 -m pip cache purge` | Tool | Review | |
 | J-BREW | Homebrew cleanup | `brew cleanup --prune=all` | Tool | Review | Removes old *installed* versions of formulae and casks as well as downloads; label it so. Show `brew cleanup -n` output in the confirmation sheet |
-| J-DOCKER | Docker build cache | `docker builder prune -f` and `docker image prune -f` | Tool | Review | Docker running. Never `--volumes` and never `system prune -a` |
+| J-DOCKER | Docker build cache | `docker builder prune -f` and `docker image prune -f` | Tool | Review | `docker` found (6.5); whether Docker runs isn't asked during the scan, and the size isn't shown. Never `--volumes` and never `system prune -a` |
 | J-XC-DD | Xcode DerivedData | Children of `~/Library/Developer/Xcode/DerivedData` | Trash | Safe | Xcode not running |
-| J-XC-SIM | Unavailable simulators | `xcrun simctl delete unavailable` | Tool | Review | Deletes those simulators' data too. Xcode not running; no simulator booted; `xcode-select -p` succeeds |
+| J-XC-SIM | Unavailable simulators | `xcrun simctl delete unavailable` | Tool | Review | Deletes those simulators' data too. Shown when a simulator's `device.plist` exists, without a count (6.5). Xcode not running; no simulator booted (by `device.plist`, and by `simctl list devices booted` right before the command); `xcode-select -p` succeeds |
 | J-XC-DS | Old device support | `~/Library/Developer/Xcode/iOS DeviceSupport` children, except the newest 2 | Trash | Review | "Newest" by the OS version parsed from the folder name (numeric compare), not by date. Names like `iPhone15,2 17.0 (21A…)` take the version after the device model. Every folder whose version is among the 2 newest distinct versions is kept, across device models. Folders whose name can't be parsed are kept (S5) |
 | J-UNITY | Unity caches | `~/Library/Caches/com.unity3d.*` | Trash | Review | Unity not running |
 | J-UNITY-UPM | Unity package cache | `~/Library/Caches/Unity/upm` | — | Info | Manages its own size |
@@ -796,7 +844,14 @@ With fixture apps `com.vendor.app` and `com.vendor.app.pro` both installed, unin
     says, and a container without readable metadata isn't listed.
   - **Group Containers** match by the entitlement list *or* by key (for example
     `group.com.vendor.app`). Either way, a group another app's entitlements claim is Info,
-    "Shared with <App>".
+    "Shared with <App>". Entitlements are read without checking the signature, so any app can
+    list any group: a group container with a protected name (the protection list, 9.3, which
+    covers anything containing `apple`, such as `group.com.apple.notes`) is Info, "Not moved:
+    protected name".
+  - **Embedded IDs another app has.** An app can embed a bundle with any ID. When the ID that
+    matched a key is an embedded ID (not the app's own) and LaunchServices knows an app with
+    exactly that ID outside the target bundle, that app owns the key, even when the key equals
+    the ID.
   - **Folders named after the app** (Application Support, Caches, Logs, HTTPStorages, WebKit) are
     listed as Review, not pre-selected, in "Named like <App>". The name must equal one of the
     app's names (name, display name, executable, file name) without case, spaces, dots, hyphens
@@ -826,18 +881,22 @@ With fixture apps `com.vendor.app` and `com.vendor.app.pro` both installed, unin
   fixed: only folders between the app root and the app count.
 - **Limits.** Entitlements are read from the code signature; an unsigned or unreadable app has
   none, so a group container shared by an unsigned app isn't detected as shared. Group
-  containers are never pre-selected, which covers this. Processes of other users are found by
+  containers are never pre-selected, which covers this. LaunchServices is asked for the first
+  app with an ID: when it names the target's own embedded bundle while another copy elsewhere
+  also has that ID, the other copy isn't seen. Processes of other users are found by
   executable path only as far as macOS reports them.
 - **Testing.** `scripts/selftest.sh` checks ownership (longest ID, ties, partial components),
   the kinds table, name keys, the refusals (Apple IDs, `/System/Applications`, outside
   Applications, App Monitor itself, a bundle the user can't move, links, non-apps), the app list,
   the target ID set, the plan on a small tree (each kind, shared group, item holding an app,
   `/Library`, no age limits, no FDA, a running helper, a process inside the bundle, the `.pro`
-  case), the app-root path guard, and the selection rules. `scripts/make-fixtures.sh --uninstall`
+  case), the app-root path guard, the selection rules, a claimed group with a protected name,
+  and embedded IDs that LaunchServices knows elsewhere. `scripts/make-fixtures.sh --uninstall`
   builds a separate tree with ad-hoc signed apps carrying app-group entitlements, and
   `scripts/fixture-test.sh` checks the section 10 acceptance with `--uninstall-json`
   (`APPMON_UNINSTALL=<relative path>`), the refusals, a running helper, two copies, no FDA, a dry
-  run, an act with `--uninstall-clean`, and that the moved app is gone.
+  run, an act with `--uninstall-clean`, that the moved app is gone, and that a claimed
+  `group.com.apple.*` container is Info.
 - **Measured** (debug build, dry-run plans of every app in `/Applications` and `~/Applications` of
   one Mac, without Full Disk Access, after the review fixes): 51 apps; 24 planned and 27 refused
   (20 the user can't move, such as App Store apps, 4 iPhone and iPad apps, 1 helper inside another

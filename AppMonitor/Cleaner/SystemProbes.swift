@@ -22,15 +22,20 @@ enum CleanerConfig {
 
     static var roots: Roots { fixtureRoot.flatMap(Roots.fixture) ?? Roots.real() }
 
-    /// Dry run: log instead of acting. Fixture mode implies it unless APPMON_FIXTURE_ACT=1.
+    /// Dry run: log instead of acting (debug builds only). Fixture mode implies it unless
+    /// APPMON_FIXTURE_ACT=1.
     static var dryRun: Bool {
+        #if APPMON_DEBUG
         if env["APPMON_DRY_RUN"] == "1" { return true }
         if fixtureRoot != nil { return env["APPMON_FIXTURE_ACT"] != "1" }
+        #endif
         return false
     }
 
     static func fda(_ roots: Roots) -> FDAStatus {
+        #if APPMON_DEBUG
         if fixtureRoot != nil { return FDAStatus(rawValue: env["APPMON_FIXTURE_FDA"] ?? "granted") ?? .granted }
+        #endif
         return Permissions.detect(home: roots.home)
     }
 
@@ -54,7 +59,7 @@ enum CleanerConfig {
     }
 
     static func tools(_ roots: Roots) -> ToolLocator {
-        ToolLocator(dirs: roots.toolDirs, xcodeSelectOK: roots.fixture ? true : ToolLocator.commandLineToolsInstalled())
+        ToolLocator(places: roots.toolPlaces, xcodeSelectOK: roots.fixture ? true : ToolLocator.commandLineToolsInstalled())
     }
 
     static func context(limits: AgeLimits, ignore: [String], cancel: CancelFlag) -> ScanContext {
@@ -70,7 +75,9 @@ enum CleanerConfig {
     /// IDs it "finds", and APPMON_FIXTURE_SPOTLIGHT=fail makes every question go unanswered.
     static func spotlight(_ inv: AppInventory) -> ([String]) -> SpotlightAnswer {
         if let root = fixtureRoot {
+            #if APPMON_DEBUG
             if env["APPMON_FIXTURE_SPOTLIGHT"] == "fail" { return { _ in .failed } }
+            #endif
             let found = Set(((try? String(contentsOfFile: root + "/spotlight.txt", encoding: .utf8)) ?? "")
                 .split(separator: "\n").map { $0.lowercased() })
             return { ids in ids.contains { found.contains($0.lowercased()) } ? .found : .notFound }
@@ -80,10 +87,30 @@ enum CleanerConfig {
     }
 
     static func cleanEnvironment(_ ctx: ScanContext) -> CleanEnvironment {
-        CleanEnvironment(guardian: PathGuard(roots: ctx.roots), runningNow: ctx.inventory.running,
-                         inventory: ctx.inventory, roots: ctx.roots, dryRun: dryRun, now: Date.init,
-                         prepareTrash: FinderTrash.prepare)
+        #if APPMON_DEBUG
+        installSwapHook()
+        #endif
+        return CleanEnvironment(guardian: PathGuard(roots: ctx.roots), runningNow: ctx.inventory.running,
+                                inventory: ctx.inventory, roots: ctx.roots, dryRun: dryRun, now: Date.init,
+                                prepareTrash: FinderTrash.prepare)
     }
+
+    #if APPMON_DEBUG
+    /// Fixture test hook (spec 13): APPMON_FIXTURE_SWAP names a folder relative to the fixture
+    /// root. After the items are checked and the Finder event is built, that folder is renamed
+    /// to "<folder>.moved" and replaced by a symlink to <root>/decoy, once, for the first request
+    /// with an item inside it.
+    static func installSwapHook() {
+        guard let root = fixtureRoot, let rel = env["APPMON_FIXTURE_SWAP"], !rel.isEmpty, !rel.contains("..") else { return }
+        let dir = root + "/" + rel
+        FinderTrash.beforeSend = { paths in
+            guard paths.contains(where: { $0.hasPrefix(dir + "/") }) else { return }
+            FinderTrash.beforeSend = nil
+            guard (try? FileManager.default.moveItem(atPath: dir, toPath: dir + ".moved")) != nil else { return }
+            try? FileManager.default.createSymbolicLink(atPath: dir, withDestinationPath: root + "/decoy")
+        }
+    }
+    #endif
 }
 
 extension CleanerConfig {
@@ -97,13 +124,14 @@ extension CleanerConfig {
 }
 
 /// Moves items to the Trash through Finder, so Finder's Put Back returns them where they were.
-/// The Apple event is built from file URLs (no script text). macOS asks once whether App Monitor
-/// may control Finder. If that's declined or Finder isn't running, items are moved with
+/// The Apple event is built from file reference URLs (no script text), so a folder above an item
+/// swapped for a symlink after the checks can't redirect the move. macOS asks once whether App
+/// Monitor may control Finder. If that's declined or Finder isn't running, items are moved with
 /// FileManager instead, without Put Back.
 enum FinderTrash {
     /// Asks for permission to control Finder (macOS shows its prompt once), then picks the mover.
     /// Runs before any item is checked, so waiting for the user never makes a check stale.
-    static func prepare() -> ([String]) -> [String: TrashResult] {
+    static func prepare() -> TrashMover {
         let finder = NSAppleEventDescriptor(bundleIdentifier: "com.apple.finder")
         let status = AEDeterminePermissionToAutomateTarget(finder.aeDesc, AEEventClass(kAECoreSuite),
                                                            AEEventID(kAEDelete), true)
@@ -118,36 +146,79 @@ enum FinderTrash {
     /// (-1728 "no such object" is left out: it usually means one item vanished.)
     static let wholeRequest: Set<Int32> = [-1712, -128, -600, -609, -1743, -1744, -1708, -10661]
 
-    static func move(_ paths: [String]) -> [String: TrashResult] {
-        let before = Dictionary(paths.map { ($0, ScanEngine.fileID($0) ?? []) }, uniquingKeysWith: { a, _ in a })
-        let code = send(paths)
-        let trash = Roots.canonical(NSHomeDirectory()) + "/.Trash"
+    #if APPMON_DEBUG
+    /// Test hook (fixture mode): runs after the event is built, right before it is sent.
+    static var beforeSend: (([String]) -> Void)? = nil
+    #endif
+
+    static func move(_ items: [TrashItem]) -> [String: TrashResult] {
         var r: [String: TrashResult] = [:]
-        for p in paths {
-            let gone = ScanEngine.lstatInfo(p) == nil
+        var sent: [TrashItem] = []
+        let list = NSAppleEventDescriptor.list()
+        for it in items {
+            // The quick checks for this item, then its reference, right before it joins the event.
+            if let why = it.recheck() { r[it.path] = .skipped(why); continue }
+            guard let d = descriptor(it) else { r[it.path] = .skipped("Changed since the scan"); continue }
+            sent.append(it)
+            list.insert(d, at: sent.count)
+        }
+        guard !sent.isEmpty else { return r }
+        #if APPMON_DEBUG
+        beforeSend?(sent.map(\.path))
+        #endif
+        let (code, names) = send(list)
+        let trash = Roots.canonical(NSHomeDirectory()) + "/.Trash"
+        // Looked for under the names Finder's reply gives, then the likely names (listing the
+        // Trash needs Full Disk Access; looking at a named item in it doesn't).
+        let listed = TrashLookup.listing(trash)
+        for it in sent {
+            let p = it.path
+            // Gone: the checked file is no longer at its path (something else may be there now).
+            let gone = ScanEngine.fileID(p) != it.fileID
+            let inTrash = {
+                names.contains { ScanEngine.fileID(trash + "/" + $0) == it.fileID }
+                    || TrashLookup.found(URL(fileURLWithPath: p).lastPathComponent, fileID: it.fileID, trash: trash, listed: listed)
+            }
             if let c = code, wholeRequest.contains(c) {
                 let why = c == -1712 ? "Finder didn't answer in time" : c == -128 ? "Cancelled in Finder"
                     : "Finder couldn't be used (error \(c))"
                 r[p] = .failedAll(gone ? why + "; check the Trash" : why)
             } else if let c = code {
-                if gone, TrashLookup.found(URL(fileURLWithPath: p).lastPathComponent, fileID: before[p] ?? [], trash: trash) {
+                if gone, inTrash() {
                     r[p] = .movedDespiteError
                 } else {
                     r[p] = .failed(gone ? "Finder reported error \(c); check the Trash" : "Finder couldn't move it (error \(c))")
                 }
+            } else if gone {
+                r[p] = inTrash() ? .moved(putBack: true) : .movedUnverified
             } else {
-                r[p] = gone ? .moved(putBack: true) : .failed("Finder didn't move it")
+                r[p] = .failed("Finder didn't move it")
             }
         }
         return r
     }
 
-    /// Sends Finder a "delete" event for the files. Returns an error code, or nil on success.
-    static func send(_ paths: [String]) -> Int32? {
-        let list = NSAppleEventDescriptor.list()
-        for (i, p) in paths.enumerated() {
-            list.insert(NSAppleEventDescriptor(fileURL: URL(fileURLWithPath: p)), at: i + 1)
+    /// The item as a file reference URL ("file:///.file/id=…"), which names the file itself, not
+    /// its path. Made right after the checks, and kept only if it still resolves to the checked
+    /// path and file. Built from the URL's own text: Swift's URL would turn it back into a path.
+    /// A hard-linked file falls back to its path URL (a reference could resolve to another link),
+    /// after the same folder check the FileManager mover uses.
+    static func descriptor(_ it: TrashItem) -> NSAppleEventDescriptor? {
+        let url = URL(fileURLWithPath: it.path)
+        if let st = ScanEngine.lstatInfo(it.path), (st.st_mode & S_IFMT) == S_IFDIR || st.st_nlink == 1,
+           let ref = CFURLCreateFileReferenceURL(nil, url as CFURL, nil)?.takeRetainedValue() {
+            guard let back = CFURLCreateFilePathURL(nil, ref, nil)?.takeRetainedValue(),
+                  (back as URL).path == it.path, ScanEngine.fileID(it.path) == it.fileID,
+                  let text = (CFURLGetString(ref) as String).data(using: .utf8) else { return nil }
+            return NSAppleEventDescriptor(descriptorType: DescType(typeFileURL), data: text)
         }
+        guard Cleaner.sameItemInFolder(it) else { return nil }
+        return NSAppleEventDescriptor(fileURL: url)
+    }
+
+    /// Sends Finder a "delete" event for the files. Returns an error code (nil on success) and
+    /// the names Finder's reply gives the moved items.
+    static func send(_ list: NSAppleEventDescriptor) -> (code: Int32?, names: [String]) {
         let finder = NSAppleEventDescriptor(bundleIdentifier: "com.apple.finder")
         let event = NSAppleEventDescriptor.appleEvent(withEventClass: AEEventClass(kAECoreSuite),
                                                       eventID: AEEventID(kAEDelete), targetDescriptor: finder,
@@ -156,10 +227,25 @@ enum FinderTrash {
         event.setParam(list, forKeyword: keyDirectObject)
         do {
             let reply = try event.sendEvent(options: [.waitForReply], timeout: 120)
-            if let e = reply.paramDescriptor(forKeyword: keyErrorNumber)?.int32Value, e != 0 { return e }
-            return nil
+            let names = replyNames(reply.paramDescriptor(forKeyword: keyDirectObject))
+            if let e = reply.paramDescriptor(forKeyword: keyErrorNumber)?.int32Value, e != 0 { return (e, names) }
+            return (nil, names)
         } catch {
-            return Int32((error as NSError).code)
+            return (Int32((error as NSError).code), [])
+        }
+    }
+
+    /// The item names in Finder's reply: an object specifier per moved item ("item 'x' of folder
+    /// '.Trash' of …"), alone or in a list. Only plain names are kept.
+    static func replyNames(_ d: NSAppleEventDescriptor?) -> [String] {
+        guard let d else { return [] }
+        let specs = d.descriptorType == DescType(typeAEList) && d.numberOfItems > 0
+            ? (1...d.numberOfItems).compactMap { d.atIndex($0) } : [d]
+        return specs.compactMap { s in
+            guard s.descriptorType == DescType(typeObjectSpecifier),
+                  let n = s.forKeyword(AEKeyword(keyAEKeyData))?.stringValue,
+                  !n.isEmpty, !n.contains("/"), n != ".", n != ".." else { return nil }
+            return n
         }
     }
 
