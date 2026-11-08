@@ -50,6 +50,9 @@ jobs:
       - name: Logic self-test
         run: scripts/selftest.sh
 
+      - name: Process grouping test
+        run: scripts/grouping-test.sh
+
       - name: Import signing certificate into a temporary keychain
         id: keychain
         env:
