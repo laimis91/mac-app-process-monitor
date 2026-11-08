@@ -168,8 +168,13 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         if let responsible { eq(responsible, child, "the child is responsible for itself") }
         else { print("     (skipped: responsibility can't be asked here)") }
         // With Full Disk Access in this process (a terminal that has it), the child must not have it.
+        // GitHub's macOS runners don't enforce privacy protection (TCC): every process there can list
+        // ~/Library/Safari, disclaimed or not, so the check means nothing there. The responsibility
+        // check above still runs.
         let safari = ToolEnvironment.realHome() + "/Library/Safari"
-        if (try? FileManager.default.contentsOfDirectory(atPath: safari)) != nil {
+        if ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true" {
+            print("     (skipped: CI runners don't enforce Full Disk Access)")
+        } else if (try? FileManager.default.contentsOfDirectory(atPath: safari)) != nil {
             let r = ToolRunner.run("/bin/ls", [safari], timeout: 10)
             check(r.status != 0, "a child can't list ~/Library/Safari although this process can")
         } else { print("     (skipped: this process has no Full Disk Access, so the FDA check can't run)") }
