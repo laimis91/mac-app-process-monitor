@@ -805,6 +805,19 @@ With fixture apps `com.vendor.app` and `com.vendor.app.pro` both installed, unin
     the user can't move. An app bundle that can't be read in full or holds a locked file is Info too.
   - **Other copies** keep the selection, as section 10 says: the warning is shown above the list
     and again in the confirmation sheet.
+- **Review fixes.** The first independent review found:
+  - a helper app inside another app's bundle could be dropped and moved: refused ("part of another
+    app"), and the app-root guard now denies any bundle with a bundle folder above it;
+  - a process running from inside the bundle blocked only the bundle at action time: every
+    uninstaller item now records its bundle (`insideBundle`) and is skipped while anything runs
+    from it;
+  - an app known only to LaunchServices (installed outside the scanned folders) could lose data
+    to the target: a key longer than the target ID it matched is now looked up, and its owner wins;
+  - a failed process listing counted as "nothing running": it now counts as running (S5);
+  - after picking another app, the previous app's header and Quit button stayed until the new
+    plan arrived: they are cleared at once, and Quit acts only on the app shown;
+  - Quit is offered only when a running app was found by bundle ID; for processes found by path,
+    the banner says to quit them in Activity Monitor.
 - **Limits.** Entitlements are read from the code signature; an unsigned or unreadable app has
   none, so a group container shared by an unsigned app isn't detected as shared. Group
   containers are never pre-selected, which covers this. Processes of other users are found by
@@ -820,12 +833,13 @@ With fixture apps `com.vendor.app` and `com.vendor.app.pro` both installed, unin
   (`APPMON_UNINSTALL=<relative path>`), the refusals, a running helper, two copies, no FDA, a dry
   run, an act with `--uninstall-clean`, and that the moved app is gone.
 - **Measured** (debug build, dry-run plans of every app in `/Applications` and `~/Applications` of
-  one Mac, without Full Disk Access): 51 apps; 24 planned and 27 refused (21 the user can't move,
-  such as App Store apps, 4 iPhone and iPad apps, 1 link, App Monitor itself). The 24 plans list
-  112 items: 36 pre-selected, 40 Review not pre-selected, 9 Info, and 11 "Named like" folders,
-  each checked by hand to belong to its app. No file appears in two apps' plans. 9 apps were
-  running, so nothing of theirs was pre-selected; 1 app has a second copy. A plan takes 0.04 s
-  (median), at most 1.1 s.
+  one Mac, without Full Disk Access, after the review fixes): 51 apps; 24 planned and 27 refused
+  (20 the user can't move, such as App Store apps, 4 iPhone and iPad apps, 1 helper inside another
+  app, 1 link, App Monitor itself). The 24 plans list 111 items: 36 pre-selected, 9 Info, and the
+  rest selectable but not pre-selected (Review rows, and every row of the 9 apps that were
+  running); 11 of them are "Named like" folders, each checked by hand to belong to its app. No
+  file appears in two apps' plans. 1 app has a second copy. A plan takes 0.04 s (median), at
+  most 0.8 s.
 
 ## 11. Phase 5: Stable code signing
 

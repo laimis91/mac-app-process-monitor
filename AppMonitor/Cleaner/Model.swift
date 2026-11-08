@@ -36,6 +36,7 @@ struct CleanItem: Identifiable, Codable {
     var inspect = false             // re-checked for always-protected contents (an app inside, …) when cleaned
     var preselect = false           // uninstaller Review rows the user asked for by naming the app (spec 10)
     var appBundle = false           // the app bundle itself (uninstaller): checked against the app roots (6.4)
+    var insideBundle: String? = nil // uninstaller: skipped while any process runs from inside this bundle
 
     var selectable: Bool { risk != .info && note == nil }
     /// S6: only Safe and Requested items moved to the Trash are pre-selected, never tool commands.

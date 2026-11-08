@@ -150,6 +150,7 @@ final class CleanerModel: ObservableObject {
                     self.scanning = false
                     self.progress = flag.isSet ? "Stopped" : ""
                     self.lastScan = Date()
+                    if flag.isSet && self.target == nil { self.targetPath = nil; self.lastScan = nil }   // back to the app list
                     if result == nil { self.refusal = "This app is no longer there."; self.chooseAnother() }
                 }
                 return
@@ -199,6 +200,9 @@ final class CleanerModel: ObservableObject {
         }
         refusal = nil
         targetPath = Uninstaller.located(path)
+        target = nil            // the previous app's header and Quit button go away at once
+        categories = []
+        selected = []
         scan()
     }
 
@@ -215,7 +219,7 @@ final class CleanerModel: ObservableObject {
 
     /// Quits the app being uninstalled and its helpers, then lists its files again.
     func quitTarget() {
-        guard let t = target else { return }
+        guard let t = target, t.app.path == targetPath, !scanning else { return }
         let ids = CleanerConfig.runningApps().filter { r in t.ids.contains { BundleIDs.related(r.id, $0) } }.map(\.id)
         quit(ids)
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.scan() }

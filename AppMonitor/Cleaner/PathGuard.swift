@@ -18,6 +18,10 @@ struct PathGuard {
     static func within(_ p: [String], _ root: [String]) -> Bool {
         p.count >= root.count && Array(p.prefix(root.count)) == root
     }
+    /// A folder name that marks a bundle (an app, or a part of one).
+    static func isBundleName(_ c: String) -> Bool {
+        [".app", ".appex", ".xpc", ".bundle", ".framework", ".plugin"].contains { c.lowercased().hasSuffix($0) }
+    }
     static func strictlyInside(_ p: [String], _ root: [String]) -> Bool {
         p.count > root.count && within(p, root)
     }
@@ -105,6 +109,7 @@ struct PathGuard {
         if appBundle {
             guard appRoots.contains(rootC) else { return "Not an allowed location" }
             guard item.last?.hasSuffix(".app") == true else { return "Not an app" }
+            guard !item.dropLast().contains(where: Self.isBundleName) else { return "Part of another app" }
         } else {
             guard allowRoots.contains(rootC) else { return "Not an allowed location" }
         }

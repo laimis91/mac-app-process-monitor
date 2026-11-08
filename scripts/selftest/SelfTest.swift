@@ -847,6 +847,19 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         eq(Uninstaller.owner(of: "com.vendor", target: t, others: o), nil, "shorter key not matched")
         eq(Uninstaller.owner(of: "com.vendor.login", target: t, others: [("com.vendor.login", "Suite")]), .other("Suite"),
            "an ID another app also has: the other app wins")
+        // un-4: LaunchServices knows an app the folders don't (com.vendor.app.beta in Downloads).
+        let ls: (String) -> AppInfo? = { id in
+            id.lowercased() == "com.vendor.app.beta" ? AppInfo(id: "com.vendor.app.beta", name: "Beta", path: "/Users/x/Downloads/Beta.app") : nil
+        }
+        eq(Uninstaller.owner(of: "com.vendor.app.beta", target: t, others: o, lookup: ls, targetPath: "/Applications/Vendor.app"),
+           .other("Beta"), "app known only to LaunchServices wins")
+        eq(Uninstaller.owner(of: "com.vendor.app.beta.cache", target: t, others: o, lookup: ls, targetPath: "/Applications/Vendor.app"),
+           .other("Beta"), "its sub-IDs too")
+        eq(Uninstaller.owner(of: "com.vendor.app", target: t, others: o, lookup: ls, targetPath: "/Applications/Vendor.app"),
+           .target, "the target ID itself isn't looked up")
+        let self_: (String) -> AppInfo? = { _ in AppInfo(id: "com.vendor.app", name: "Vendor", path: "/Applications/Vendor.app") }
+        eq(Uninstaller.owner(of: "com.vendor.app.cache", target: t, others: o, lookup: self_, targetPath: "/Applications/Vendor.app"),
+           .target, "LaunchServices answering with the target keeps it")
         eq(Uninstaller.kind(LeftoverPlace.named("caches")), .safe, "caches Safe")
         eq(Uninstaller.kind(LeftoverPlace.named("preferences")), .data, "settings Review, pre-selected")
         eq(Uninstaller.kind(LeftoverPlace.named("cookies")), .data, "cookies Review, pre-selected")
@@ -902,6 +915,8 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         check(Uninstaller.refusal(A + "/NotApp.app", roots: r, selfIDs: me)?.contains("isn't an app") == true, "folder named .app refused")
         check(Uninstaller.refusal(A + "/Phone.app", roots: r, selfIDs: me)?.contains("iPhone or iPad") == true, "iOS app wrapper refused")
         check(Uninstaller.refusal(A, roots: r, selfIDs: me) != nil, "Applications itself refused")
+        check(Uninstaller.refusal(A + "/Vendor.app/Contents/Library/LoginItems/Login.app", roots: r, selfIDs: me)?.contains("part of another app") == true,
+              "un-1: helper inside another app refused")
         let choices = Uninstaller.choices(r, selfIDs: me)
         check(!choices.contains { $0.app.id.hasPrefix("com.apple.") }, "Apple apps not offered")
         check(choices.contains { $0.app.id == "com.vendor.app" && $0.refusal == nil }, "Vendor offered")
@@ -982,5 +997,20 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         check(g.check(L + "/Caches/com.vendor.app", allowRoot: A, appBundle: true) != nil, "data outside Applications")
         check(g.check(L + "/Caches/com.vendor.app", allowRoot: L + "/Caches", appBundle: true) != nil, "bundle flag needs an app root")
         check(g.check(r.systemApplications + "/Sys.app", allowRoot: r.systemApplications, appBundle: true) != nil, "System/Applications denied")
+        check(g.check(A + "/Vendor.app/Contents/Library/LoginItems/Login.app", allowRoot: A, appBundle: true) != nil, "un-1: guard denies a bundle inside a bundle")
+
+        // un-3, un-6: at action time a process inside the bundle skips every uninstaller item, not only the bundle.
+        guard let fresh = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(), probes: probes) else { check(false, "plan again"); return }
+        let movable = fresh.categories.flatMap { c in c.items.filter(\.selectable).map { (c, $0) } }
+        check(movable.allSatisfy { $0.1.insideBundle == Uninstaller.located(A + "/Vendor.app") }, "every item knows its bundle")
+        let inv = AppInventory(roots: r, lookup: nil, running: { [] })
+        var env = CleanEnvironment(guardian: PathGuard(roots: r), runningNow: { [] }, inventory: inv, roots: r, dryRun: true, now: Date.init)
+        env.processesInside = { _ in ["tool"] }
+        let busyOut = Cleaner.clean(movable, env: env)
+        check(!busyOut.isEmpty && busyOut.allSatisfy { $0.status == .skipped && $0.reason == "tool is running from inside the app" },
+              "process inside the bundle: everything skipped")
+        env.processesInside = { _ in [] }
+        let idle = Cleaner.clean(movable, env: env)
+        check(!idle.isEmpty && idle.allSatisfy { $0.status == .planned }, "nothing running: everything planned")
     }
 }

@@ -335,8 +335,8 @@ enum Cleaner {
             if let why = g.check(item.path) { return why }
         } else if let why = env.guardian.check(item.path, allowRoot: item.allowRoot, appBundle: item.appBundle) { return why }
         if ScanEngine.fileID(item.path) != item.fileID { return "Changed since the scan" }
-        // The app bundle: no process may run from inside it, whatever its bundle ID (spec 10).
-        if item.appBundle, let who = env.processesInside(item.path).first { return "\(who) is running from inside the app" }
+        // Uninstaller items: no process may run from inside the app's bundle, whatever its bundle ID (spec 10).
+        if let b = item.insideBundle, let who = env.processesInside(b).first { return "\(who) is running from inside the app" }
         return nil
     }
 

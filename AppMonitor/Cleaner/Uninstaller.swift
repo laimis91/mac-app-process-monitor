@@ -13,6 +13,7 @@ struct UninstallTarget {
     let groups: [String]            // app-group entitlements of the app and its embedded bundles, lowercased
     var otherCopies: [String] = []  // other bundles with the same ID (LaunchServices and the app folders)
     var running: [String] = []      // names of the app, its helpers, or processes inside the bundle, now running
+    var runningByID = false         // one of them is an app Quit can stop (found by bundle ID)
 }
 
 /// What the uninstaller asks the system. Real probes in the app, plain closures in tests.
@@ -54,6 +55,10 @@ enum Uninstaller {
         }
         guard Leftovers.isBundle(p), let a = AppInventory.info(p) else { return "This isn't an app." }
         let c = PathGuard.comps(p)
+        // A helper or extension inside another bundle is part of that app, never an app to remove.
+        if c.dropLast().contains(where: PathGuard.isBundleName) {
+            return "This is part of another app. Uninstall that app instead."
+        }
         if a.id.lowercased().hasPrefix("com.apple.")
             || PathGuard.within(c, PathGuard.comps(Roots.canonical(roots.systemApplications)))
             || PathGuard.within(c, ["system"]) {
@@ -100,13 +105,25 @@ enum Uninstaller {
 
     /// Who `key` belongs to. The longest matching ID decides; on a tie the other app wins, so
     /// with com.vendor.app and com.vendor.app.pro installed, com.vendor.app.pro's data stays.
-    static func owner(of key: String, target: [String], others: [(id: String, name: String)]) -> Owner? {
+    /// `lookup` asks LaunchServices (probe 1) about a key that is longer than the target ID it
+    /// matched, and each shorter ID down to it: an app installed outside the scanned folders
+    /// (com.vendor.app.beta in Downloads) then wins too.
+    static func owner(of key: String, target: [String], others: [(id: String, name: String)],
+                      lookup: ((String) -> AppInfo?)? = nil, targetPath: String = "") -> Owner? {
         let k = key.lowercased()
         var best = -1
         var who: Owner?
         for t in target where BundleIDs.belongs(k, to: t) && t.count > best { best = t.count; who = .target }
         guard who != nil else { return nil }
         for o in others where BundleIDs.belongs(k, to: o.id) && o.id.count >= best { best = o.id.count; who = .other(o.name) }
+        if who == .target, let lookup, k.count > best {
+            for pre in LeftoverMatcher.prefixes(key) where pre.count > best {
+                guard let a = lookup(pre) else { continue }
+                let same = target.contains(a.id.lowercased())
+                    || PathGuard.within(PathGuard.comps(a.path), PathGuard.comps(targetPath))
+                if !same { return .other(a.name) }
+            }
+        }
         return who
     }
 
@@ -170,6 +187,8 @@ enum Uninstaller {
             .flatMap { [$0.name] + $0.names } + extra.flatMap { [$0.name] + $0.names }
         let named = nameKeys(app, others: otherNames)
         let ownerNames = [app.name]
+        let lookup = ctx.inventory.lookup
+        func own(_ key: String) -> Owner? { owner(of: key, target: t.ids, others: others, lookup: lookup, targetPath: path) }
 
         // Who else claims an app group (only read when a group container is related).
         var claimsCache: [String: [String]]?
@@ -199,6 +218,7 @@ enum Uninstaller {
                                 reason: "The app you chose (\(app.id))", allowRoot: appRoot, fileID: am.fileID,
                                 owners: t.ids, ownerNames: ownerNames, checkOpenFiles: true)
         appItem.appBundle = true
+        appItem.insideBundle = path
         if !am.complete { appItem = info(appItem, "Part of the app can't be read. Remove it in Finder.") }
         else if am.locked { appItem = info(appItem, "The app contains a locked file. Remove it in Finder.") }
         rows.append((.data, appItem, false))
@@ -228,11 +248,11 @@ enum Uninstaller {
                     // Only the container's own record says whose it is (spec 10).
                     guard let meta = NSDictionary(contentsOfFile: p + "/.com.apple.containermanagerd.metadata.plist")?["MCMMetadataIdentifier"] as? String,
                           t.ids.contains(meta.lowercased()),
-                          owner(of: meta, target: t.ids, others: others) == .target else { continue }
+                          own(meta) == .target else { continue }
                     why = "\(place.noun) of \(meta)"
                 case "groupContainers":
                     let byGroup = t.groups.contains(n.lowercased())
-                    let o = key.kind == .bundleID ? owner(of: key.key, target: t.ids, others: others) : nil
+                    let o = key.kind == .bundleID ? own(key.key) : nil
                     if case .other = o { continue }
                     guard byGroup || o == .target else { continue }
                     why = byGroup ? "\(place.noun) of the app group \(n), listed in \(app.name)'s entitlements"
@@ -240,11 +260,11 @@ enum Uninstaller {
                     shared = claimers(n.lowercased())
                 case "launchAgents", "sysLaunchAgents", "sysLaunchDaemons":
                     let label = (NSDictionary(contentsOfFile: p)?["Label"] as? String) ?? key.key
-                    guard owner(of: label, target: t.ids, others: others) == .target else { continue }
+                    guard own(label) == .target else { continue }
                     why = "\(place.noun) \(label)"
                 default:
                     if key.kind == .bundleID {
-                        guard owner(of: key.key, target: t.ids, others: others) == .target else { continue }
+                        guard own(key.key) == .target else { continue }
                         why = "\(place.noun) of \(key.key)"
                     } else if namedPlaces.contains(place.id) && place.tier == .orphan && named.contains(EvidenceName.key(n)) {
                         why = "\(place.noun) named like \(app.name). It isn't matched by bundle ID, so check it belongs to this app."
@@ -271,6 +291,7 @@ enum Uninstaller {
                                      ownerNames: ownerNames, checkOpenFiles: true)
                 item.inspect = true
                 item.preselect = k == .data
+                item.insideBundle = path   // S7/S13: nothing of the app is moved while anything runs from its bundle
                 if let kept { item = info(item, why + ". " + kept) }
                 rows.append((k, item, byName))
             }
@@ -279,6 +300,7 @@ enum Uninstaller {
         // S7: the app, a helper, or anything running from inside the bundle blocks the whole uninstall.
         var running = Set<String>()
         if let r = ctx.inventory.runningOwner(t.ids, names: ownerNames, snapshot: ctx.running) { running.insert(r) }
+        t.runningByID = !running.isEmpty
         for n in probes.processesInside(path) { running.insert(n) }
         t.running = running.sorted()
         if let who = t.running.first {
@@ -317,6 +339,7 @@ enum Uninstaller {
         var n = CleanItem(path: i.path, name: i.name, size: i.size, newest: i.newest, risk: .info, method: .none,
                           reason: reason, allowRoot: i.allowRoot, fileID: i.fileID, owners: i.owners, ownerNames: i.ownerNames)
         n.appBundle = i.appBundle
+        n.insideBundle = i.insideBundle
         return n
     }
 
@@ -364,14 +387,17 @@ enum Entitlements {
 }
 
 enum ProcessList {
+    /// Stands for the processes when they can't be listed: doubt counts as running (S5).
+    static let unknown = "a process App Monitor couldn't check"
+
     /// Names of processes (any user's, as far as macOS shows them) whose executable is inside `folder`.
     static func inside(_ folder: String) -> [String] {
         let prefix = folder.lowercased() + "/"
         let n = proc_listallpids(nil, 0)
-        guard n > 0 else { return [] }
+        guard n > 0 else { return [unknown] }
         var pids = [Int32](repeating: 0, count: Int(n) + 64)
         let got = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
-        guard got > 0 else { return [] }
+        guard got > 0 else { return [unknown] }
         var out: [String] = []
         var buf = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         for pid in pids.prefix(Int(got)) where pid > 0 {

@@ -384,7 +384,11 @@ struct TargetHeader: View {
                     Text("\(target.running.joined(separator: ", ")) \(target.running.count == 1 ? "is" : "are") running. Quit \(target.app.name) to uninstall it; nothing is selected until then.")
                         .font(.callout).fixedSize(horizontal: false, vertical: true)
                     Spacer()
-                    Button(m.dryRun ? "Quit (off in dry run)" : "Quit \(target.app.name)") { m.quitTarget() }.disabled(m.dryRun)
+                    if target.runningByID {
+                        Button(m.dryRun ? "Quit (off in dry run)" : "Quit \(target.app.name)") { m.quitTarget() }.disabled(m.dryRun)
+                    } else {
+                        Text("Quit it in Activity Monitor").font(.caption).foregroundStyle(Theme.dim)
+                    }
                     Button("Check again") { m.scan() }
                 }
             }
