@@ -453,13 +453,16 @@ final class CleanerModel: ObservableObject {
 
     /// Runs each tool's read-only preview once per session, from the confirmation sheet's `.task`.
     /// ToolRunner can't be cancelled, so a run that is going or done is never started again; a
-    /// run that finishes after the sheet closed still fills the cache.
+    /// run that finishes after the sheet closed still fills the cache. A preview is a tool run:
+    /// only a tool that passed the lookup runs one, after the lookup's checks once more (spec 6.5).
     func loadPreviews(_ cats: [Category]) async {
         await withTaskGroup(of: Void.self) { g in
             for c in cats where previews[c.id] == nil {
-                guard !Task.isCancelled, let t = c.tool, let exe = t.executable, let args = t.preview else { continue }
-                previews[c.id] = Self.checkingPreview
+                guard !Task.isCancelled, let t = c.tool, let exe = t.executable, let place = t.place,
+                      let args = t.preview else { continue }
                 let id = c.id
+                if let why = ToolTrust.refusal(exe, place: place) { previews[id] = "Not run: \(why)"; continue }
+                previews[id] = Self.checkingPreview
                 g.addTask {
                     let r = ToolRunner.run(exe, args, timeout: 60)
                     let text = r.output.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -22,10 +22,19 @@ enum TrashLookup {
 
     /// True if the file with `fileID` sits directly in `trash` under a likely name.
     static func found(_ name: String, fileID: [UInt64], trash: String) -> Bool {
+        found(name, fileID: fileID, trash: trash, listed: listing(trash))
+    }
+
+    /// `listed`: the Trash's names, read once for a batch (`listing`).
+    static func found(_ name: String, fileID: [UInt64], trash: String, listed: [String]) -> Bool {
         guard fileID.count == 2 else { return false }
-        var listed: [String] = []
-        if case .ok(let names) = ScanEngine.children(trash) { listed = names }   // may be refused: then the plain name only
         return candidates(name, in: listed).contains { ScanEngine.fileID(trash + "/" + $0) == fileID }
+    }
+
+    /// The names in the Trash. May be refused (no Full Disk Access): then only the plain name is tried.
+    static func listing(_ trash: String) -> [String] {
+        if case .ok(let names) = ScanEngine.children(trash) { return names }
+        return []
     }
 }
 
@@ -47,9 +56,21 @@ struct Outcome: Codable {
 enum TrashResult: Equatable {
     case moved(putBack: Bool)        // putBack: Finder moved it, so Finder's Put Back works
     case movedDespiteError           // Finder reported an error, but the same file is now in the Trash
+    case movedUnverified             // it left its place, but the same file wasn't found in the Trash
+    case skipped(String)             // its quick checks failed right before the move: never handed over
     case failed(String)              // this item failed; others in the batch may still work
     case failedAll(String)           // the move failed as a whole (Finder hung, quit, cancelled): don't retry
 }
+
+/// One item for a Trash mover. The mover runs `recheck` (path guard and identity, S13a and e)
+/// right before it hands this item over, and leaves the item out if that returns a reason.
+struct TrashItem {
+    let path: String
+    let fileID: [UInt64]            // [device, inode] the checks confirmed
+    var recheck: () -> String? = { nil }
+}
+
+typealias TrashMover = ([TrashItem]) -> [String: TrashResult]
 
 struct CleanEnvironment {
     let guardian: PathGuard
@@ -61,8 +82,9 @@ struct CleanEnvironment {
     /// Picks the mover for this clean, before any item is checked. In the app this settles the
     /// "control Finder" permission first (it may wait for the user), then returns Finder's mover,
     /// or the FileManager mover (no Put Back) if Finder can't be used.
-    var prepareTrash: () -> ([String]) -> [String: TrashResult] = { Cleaner.trashWithFileManager }
-    var batchSize = 100
+    var prepareTrash: () -> TrashMover = { Cleaner.trashWithFileManager }
+    /// Items per Finder request. Small, so the full checks of a batch's first item stay recent.
+    var batchSize = 25
     /// Checks items picked in the Space map instead of the rule-based path guard (6.4).
     var spaceGuard: SpaceGuard? = nil
     /// Processes running from inside a folder (the uninstaller's app bundle, spec 10).
@@ -97,20 +119,24 @@ enum Cleaner {
             pending = []
             guard !ready.isEmpty else { return }
             var results: [String: TrashResult] = [:]
+            // The mover runs the quick location checks again for each item right before handing it over.
+            func request(_ item: CleanItem) -> TrashItem {
+                TrashItem(path: item.path, fileID: item.fileID, recheck: { locationChecks(item, env) })
+            }
             if let why = stopped {
                 for (_, item) in ready { results[item.path] = .failedAll(why) }
             } else {
-                results = trash(ready.map(\.1.path))
+                results = trash(ready.map { request($0.1) })
                 stopped = wholeFailure(results)
             }
             if ready.count > 1 {
                 // One item Finder couldn't move must not fail the rest: retry those one by one,
                 // each re-checked right before. A whole-request failure stops all further requests.
                 for (_, item) in ready {
-                    guard case .failed? = results[item.path], ScanEngine.lstatInfo(item.path) != nil else { continue }
+                    guard case .failed? = results[item.path], ScanEngine.fileID(item.path) == item.fileID else { continue }
                     if let why = stopped { results[item.path] = .failedAll(why); continue }
                     if let why = lastChecks(item, env) { results[item.path] = .failed(why); continue }
-                    let r = trash([item.path])[item.path] ?? .failed("No answer")
+                    let r = trash([request(item)])[item.path] ?? .failed("No answer")
                     results[item.path] = r
                     stopped = wholeFailure([item.path: r])
                 }
@@ -123,6 +149,11 @@ enum Cleaner {
                 case .movedDespiteError:
                     out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .moved,
                                        reason: "Finder reported an error but moved it; Put Back may not work", size: item.size))
+                case .movedUnverified:
+                    out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .moved,
+                                       reason: Cleaner.notFoundInTrash, size: item.size))
+                case .skipped(let why):
+                    out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .skipped, reason: why))
                 case .failed(let why), .failedAll(let why):
                     out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .failed, reason: why))
                 }
@@ -239,14 +270,22 @@ enum Cleaner {
         }
     }
 
+    static let notFoundInTrash = "Moved, but not found in the Trash: check it"
+
     /// Fallback mover: works without Finder, but macOS doesn't record where items came from,
-    /// so Finder's Put Back isn't offered for them.
-    static func trashWithFileManager(_ paths: [String]) -> [String: TrashResult] {
+    /// so Finder's Put Back isn't offered for them. Each item is re-checked, and its folder
+    /// opened without following any symlink, right before it is moved.
+    static func trashWithFileManager(_ items: [TrashItem]) -> [String: TrashResult] {
         var r: [String: TrashResult] = [:]
-        for p in paths {
+        for it in items {
+            let p = it.path
+            if let why = it.recheck() { r[p] = .skipped(why); continue }
+            guard sameItemInFolder(it) else { r[p] = .skipped("Changed since the scan"); continue }
             do {
-                try FileManager.default.trashItem(at: URL(fileURLWithPath: p), resultingItemURL: nil)
-                r[p] = .moved(putBack: false)
+                var moved: NSURL?
+                try FileManager.default.trashItem(at: URL(fileURLWithPath: p), resultingItemURL: &moved)
+                let there = moved?.path.flatMap(ScanEngine.fileID) == it.fileID
+                r[p] = there ? .moved(putBack: false) : .movedUnverified
             } catch {
                 r[p] = .failed((error as NSError).localizedDescription)
             }
@@ -254,11 +293,35 @@ enum Cleaner {
         return r
     }
 
+    /// True if the item's folder, opened without following a symlink anywhere on its path, is the
+    /// folder at that path now, and the entry in it is still the checked item (same device and inode).
+    static func sameItemInFolder(_ it: TrashItem) -> Bool {
+        let url = URL(fileURLWithPath: it.path)
+        let parent = url.deletingLastPathComponent().path
+        guard it.fileID.count == 2, let want = ScanEngine.fileID(parent) else { return false }
+        let fd = open(parent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NOFOLLOW_ANY | O_CLOEXEC)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var ps = stat(), st = stat()
+        guard fstat(fd, &ps) == 0, [UInt64(bitPattern: Int64(ps.st_dev)), UInt64(ps.st_ino)] == want,
+              fstatat(fd, url.lastPathComponent, &st, AT_SYMLINK_NOFOLLOW) == 0 else { return false }
+        return [UInt64(bitPattern: Int64(st.st_dev)), UInt64(st.st_ino)] == it.fileID
+    }
+
     static func runTool(_ cat: Category, _ item: CleanItem, _ tool: ToolCommand, _ env: CleanEnvironment) -> Outcome {
         let cmds = tool.commands.map { [tool.tool] + $0 }
-        guard let exe = tool.executable, FileManager.default.isExecutableFile(atPath: exe) else {
+        guard let exe = tool.executable, let place = tool.place else {
             return Outcome(path: item.path, name: item.name, category: cat.id, status: .skipped,
                            reason: "\(tool.tool) not found", command: cmds.map { $0.joined(separator: " ") })
+        }
+        // The lookup's checks again, right before it runs (spec 6.5).
+        if let why = ToolTrust.refusal(exe, place: place) {
+            return Outcome(path: item.path, name: item.name, category: cat.id, status: .skipped,
+                           reason: "Not run: \(why)", command: cmds.map { $0.joined(separator: " ") })
+        }
+        if env.dryRun {
+            return Outcome(path: item.path, name: item.name, category: cat.id, status: .planned,
+                           reason: "Run command", command: cmds.map { ([exe] + $0.dropFirst()).joined(separator: " ") })
         }
         if cat.id == "J-XC-SIM" {
             let booted = ToolRunner.run(exe, ["simctl", "list", "devices", "booted"], timeout: 30)
@@ -266,10 +329,6 @@ enum Cleaner {
                 return Outcome(path: item.path, name: item.name, category: cat.id, status: .skipped,
                                reason: "A simulator is running", command: cmds.map { $0.joined(separator: " ") })
             }
-        }
-        if env.dryRun {
-            return Outcome(path: item.path, name: item.name, category: cat.id, status: .planned,
-                           reason: "Run command", command: cmds.map { ([exe] + $0.dropFirst()).joined(separator: " ") })
         }
         let measured = !item.sizeUnknown && item.measurePath != nil
         let target = item.measurePath ?? ""

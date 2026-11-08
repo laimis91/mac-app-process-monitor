@@ -44,7 +44,7 @@ if [ "${1:-}" = "--uninstall" ]; then
   mkdir -p "$A/Vendor App.app/Contents/Library/LoginItems" "$A/Vendor App.app/Contents/XPCServices"
   signed "$A/Vendor App.app/Contents/Library/LoginItems/Vendor Login.app" com.uvendor.login "Vendor Login" group.com.uvendor.app
   signed "$A/Vendor App.app/Contents/XPCServices/Downloader.xpc" org.sparkle-project.Downloader Downloader
-  signed "$A/Vendor App.app" com.uvendor.app "Vendor App" group.com.uvendor.app ABCDE12345.com.uvendor.shared
+  signed "$A/Vendor App.app" com.uvendor.app "Vendor App" group.com.uvendor.app ABCDE12345.com.uvendor.shared group.com.apple.fixturenotes
   signed "$A/Vendor App Pro.app" com.uvendor.app.pro "Vendor App Pro" ABCDE12345.com.uvendor.shared
   # Its files, one of each kind (spec 10 table). The caches are new: no age limit applies.
   for d in Caches Logs HTTPStorages WebKit "Application Support" "Application Scripts"; do file "$L/$d/com.uvendor.app/x" 8192; done
@@ -56,6 +56,7 @@ if [ "${1:-}" = "--uninstall" ]; then
   plist "$L/Containers/com.uvendor.app/.com.apple.containermanagerd.metadata.plist" MCMMetadataIdentifier com.uvendor.app
   file "$L/Group Containers/group.com.uvendor.app/x" 4096                    # its own app group
   file "$L/Group Containers/ABCDE12345.com.uvendor.shared/x" 4096            # also claimed by Pro: Info
+  file "$L/Group Containers/group.com.apple.fixturenotes/x" 4096             # claimed, but a protected name: Info
   plist "$L/LaunchAgents/com.uvendor.app.agent.plist" Label com.uvendor.app.agent
   file "$L/Application Support/Vendor App/notes" 4096                        # named like it: not pre-selected
   file "$ROOT/Library/LaunchDaemons/com.uvendor.app.daemon.plist" 1024       # needs admin: Info

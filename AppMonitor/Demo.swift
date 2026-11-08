@@ -8,8 +8,15 @@
 import SwiftUI
 import AppKit
 
+// Debug builds only (APPMON_DEBUG=1, as scripts/screenshot.sh builds): a release build reads
+// no developer switch from its environment.
+#if APPMON_DEBUG
 let demoMode = ProcessInfo.processInfo.environment["APPMON_DEMO"] != nil
 let captureTo = ProcessInfo.processInfo.environment["APPMON_CAPTURE"]
+#else
+let demoMode = false
+let captureTo: String? = nil
+#endif
 
 enum Demo {
     static let expanded: Set<String> = ["g:terminal", "d:zsh-api", "d:dotnet-watch", "d:zsh-ml"]
@@ -102,18 +109,25 @@ enum Demo {
     }
 }
 
+#if APPMON_DEBUG
 /// Saves the app's own window (title bar included) to a PNG, then quits. Draws only this
-/// app's views, so it needs no screen-recording permission.
+/// app's views, so it needs no screen-recording permission. Creates a new file only: it never
+/// overwrites anything and doesn't follow a symlink at the path.
 @MainActor func captureWindow(to path: String) {
     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
         guard let w = NSApp.windows.first(where: { $0.isVisible }),
               let frameView = w.contentView?.superview else { exit(1) }
         let rep = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds)!
         frameView.cacheDisplay(in: frameView.bounds, to: rep)
-        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
+        let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
+        guard fd >= 0 else { exit(1) }
+        let h = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do { try h.write(contentsOf: png); try h.close() } catch { exit(1) }
         exit(0)
     }
 }
+#endif
 
 // MARK: - Disk tab demo results (made up; shown as ~/… so no real user name appears)
 
