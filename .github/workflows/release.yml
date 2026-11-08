@@ -93,6 +93,11 @@ jobs:
             -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
           # Let codesign use the key without a UI prompt.
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          # codesign on the runner finds the key only through the user keychain search list
+          # ("The specified item could not be found in the keychain" otherwise). Add the temporary
+          # keychain in front; the cleanup step restores the list.
+          security list-keychains -d user > "$RUNNER_TEMP/keychains-before.txt"
+          security list-keychains -d user -s "$KEYCHAIN" $(tr -d '"' < "$RUNNER_TEMP/keychains-before.txt")
           security find-identity -p codesigning "$KEYCHAIN" | grep -q '"App Monitor Signing"' || {
             echo "::error::The .p12 in APPMON_SIGN_P12 has no \"App Monitor Signing\" identity."
             exit 1
@@ -111,6 +116,9 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/appmon-signing.keychain-db" 2>/dev/null || true
+          if [ -s "$RUNNER_TEMP/keychains-before.txt" ]; then
+            security list-keychains -d user -s $(tr -d '"' < "$RUNNER_TEMP/keychains-before.txt") || true
+          fi
           rm -f "$RUNNER_TEMP/signing.p12"
 
       - name: Check the build
