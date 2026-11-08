@@ -14,6 +14,7 @@ if [ "${APPMON_RELEASE:-}" = "1" ] && [ -z "${APPMON_SIGN_IDENTITY:-}" ]; then
 fi
 APP="${APPMON_OUT:-App Monitor.app}"   # APPMON_OUT: build somewhere else (fixture tests)
 SOURCES=(main.swift Views.swift Demo.swift CleanerModel.swift CleanerViews.swift
+         DiskTabView.swift ResultRows.swift UninstallerViews.swift DiskPanels.swift CleanerSheets.swift SettingsView.swift
          Cleaner/Model.swift Cleaner/PathGuard.swift Cleaner/Keys.swift Cleaner/ScanEngine.swift
          Cleaner/InstalledApps.swift Cleaner/Rules.swift Cleaner/Actions.swift Cleaner/Permissions.swift
          Cleaner/SystemProbes.swift Cleaner/Headless.swift Cleaner/SpaceMap.swift

@@ -44,22 +44,17 @@ struct SpaceToolbar: View {
                 }
             }
             Spacer()
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Theme.dim)
-                TextField("Filter this folder", text: $s.filter).textFieldStyle(.plain)
-            }
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.stroke))
-            .frame(maxWidth: 240)
+            SearchField(prompt: "Filter this folder", text: $s.filter)
         }
+        // Free space in the Disk panel can change after a move or a scan.
+        .onChange(of: s.acting) { _, acting in if !acting { m.diskChanged() } }
+        .onChange(of: s.scanning) { _, scanning in if !scanning { m.diskChanged() } }
     }
 
     /// The scan is kept in memory only; its age tells how current it is.
     func ageText(now: Date) -> String {
         guard let d = s.scannedAt else { return "Shows which folders in your home folder and Applications take the most space." }
-        let age = now.timeIntervalSince(d) < 60 ? "just now" : RelativeDateTimeFormatter().localizedString(for: d, relativeTo: now)
-        return (s.stopped ? "Stopped part-way, " : "Scanned ") + age + "  ·  kept in memory only"
+        return (s.stopped ? "Stopped part-way, " : "Scanned ") + sinceText(d, now: now) + "  ·  kept in memory only"
     }
 }
 
@@ -73,11 +68,12 @@ struct SpaceMapView: View {
         case node(SpaceNode)
         case other(SpaceNode)
         case more(Int)
-        var id: String {
+        enum ID: Hashable { case node(ObjectIdentifier), other(ObjectIdentifier), more }
+        var id: ID {
             switch self {
-            case .node(let n): return "n:\(n.id.hashValue)"
-            case .other(let n): return "o:\(n.id.hashValue)"
-            case .more: return "more"
+            case .node(let n): return .node(n.id)
+            case .other(let n): return .other(n.id)
+            case .more: return .more
             }
         }
     }
@@ -85,9 +81,9 @@ struct SpaceMapView: View {
     /// One flat list, so the lazy stack only builds the rows on screen (as the Junk view does).
     var rows: [Row] {
         guard let c = s.current else { return [] }
-        let q = s.filter.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = s.filter.trimmingCharacters(in: .whitespacesAndNewlines)
         let kids = q.isEmpty ? c.children : c.children.filter {
-            $0.name.lowercased().contains(q) || ($0.owner?.name.lowercased().contains(q) ?? false)
+            $0.name.localizedCaseInsensitiveContains(q) || ($0.owner?.name.localizedCaseInsensitiveContains(q) ?? false)
         }
         var out = kids.prefix(shown).map(Row.node)
         if kids.count > shown { out.append(.more(kids.count - shown)) }
@@ -120,25 +116,24 @@ struct SpaceMapView: View {
                                 }
                                 .padding(.horizontal, 14).padding(.vertical, 8)
                             case .more(let left):
-                                HStack {
-                                    Button("Show \(min(left, Self.pageSize)) more (\(left) not shown)") { shown += Self.pageSize }
-                                        .buttonStyle(.link).font(.caption)
-                                    Spacer()
-                                }
-                                .padding(.leading, 50).padding(.vertical, 6)
+                                ShowMoreRow(left: left, pageSize: Self.pageSize, leading: 50) { shown += Self.pageSize }
                             }
                         }
                     }
                 }
-                .id(s.current.map { "\($0.id.hashValue)" } ?? "root")   // a new folder starts at the top
+                .id(s.current?.id)   // a new folder starts at the top
             }
         }
         .onChange(of: s.trail.count) { _, _ in shown = Self.pageSize }
+        .onChange(of: s.root?.id) { _, _ in shown = Self.pageSize }   // a new scan
         .sheet(item: $s.pending, onDismiss: { s.confirmationClosed() }) { n in SpaceConfirmSheet(node: n).environmentObject(s) }
         .sheet(item: $s.result) { o in SpaceResultSheet(outcome: o).environmentObject(s) }
-        .alert(item: $s.refusal) { r in
-            Alert(title: Text("“\(r.name)” stays where it is"), message: Text(r.reason + ". You can still reveal it in Finder."),
-                  dismissButton: .default(Text("OK")))
+        .alert(s.refusal.map { "“\($0.name)” stays where it is" } ?? "",
+               isPresented: Binding(get: { s.refusal != nil }, set: { if !$0 { s.refusal = nil } }),
+               presenting: s.refusal) { _ in
+            Button("OK") {}
+        } message: { r in
+            Text(r.reason + ". You can still reveal it in Finder.")
         }
     }
 
@@ -156,7 +151,7 @@ struct SpaceMapView: View {
         HStack(spacing: 8) {
             Button { s.goTo(depth: max(0, s.trail.count - 1)) } label: { Image(systemName: "chevron.left") }
                 .buttonStyle(.plain).disabled(s.trail.isEmpty).foregroundStyle(s.trail.isEmpty ? Theme.faint : Theme.text)
-                .help("Up one level")
+                .help("Up one level").accessibilityLabel("Up one level")
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     crumb("Space map", depth: 0)
@@ -171,7 +166,7 @@ struct SpaceMapView: View {
                 Text("\(c.items.formatted()) items").font(.caption).foregroundStyle(Theme.dim)
                 Text(byteText(c.size)).font(.system(size: 13, weight: .semibold, design: .monospaced))
                 Button { reveal(c.path) } label: { Image(systemName: "magnifyingglass") }
-                    .buttonStyle(.plain).help("Reveal in Finder")
+                    .buttonStyle(.plain).help("Reveal in Finder").accessibilityLabel("Reveal in Finder")
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 9)
@@ -220,10 +215,11 @@ struct SpaceRow: View {
             Spacer(minLength: 12)
             if hover {
                 Button { reveal(node.path) } label: { Image(systemName: "magnifyingglass") }
-                    .buttonStyle(.plain).foregroundStyle(Theme.dim).help("Reveal in Finder")
+                    .buttonStyle(.plain).foregroundStyle(Theme.dim).help("Reveal in Finder").accessibilityLabel("Reveal in Finder")
                 Button { s.ask(node) } label: { Image(systemName: why == nil ? "trash" : "lock") }
                     .buttonStyle(.plain).foregroundStyle(why == nil ? Theme.text : Theme.faint)
                     .help(why.map { "Reveal only: \($0)" } ?? "Move to Trash…")
+                    .accessibilityLabel(why == nil ? "Move to Trash…" : "Reveal only")
                     .disabled(s.acting || s.scanning)
             }
             HeatBar(fraction: Double(node.size) / Double(parentSize), color: old ? Theme.orange : Theme.purple)
@@ -238,6 +234,15 @@ struct SpaceRow: View {
         .contentShape(Rectangle())
         .onHover { hover = $0 }
         .onTapGesture { s.open(node) }
+        // The hover buttons, reachable with VoiceOver too (and in the context menu).
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(node.isDir && node.hasContents ? .isButton : [])
+        .accessibilityAction { s.open(node) }
+        .accessibilityActions {
+            Button("Reveal in Finder") { reveal(node.path) }
+            Button("Copy path") { copyText(node.path) }
+            if why == nil && !s.acting && !s.scanning { Button("Move to Trash…") { s.ask(node) } }
+        }
         .contextMenu {
             Button("Reveal in Finder") { reveal(node.path) }
             Button("Copy path") { copyText(node.path) }
@@ -295,9 +300,10 @@ struct SpaceConfirmSheet: View {
             if s.dryRun { Text("Dry run: nothing will be changed.").foregroundStyle(Theme.yellow) }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }.keyboardShortcut(.defaultAction)   // as in spec 4.3: Cancel is the default
                 Button("Move to Trash", role: .destructive) { s.confirm(node); dismiss() }
             }
+            .background(EscapeCloses { dismiss() })
         }
         .padding(20)
         .frame(width: 560)
@@ -314,7 +320,7 @@ struct SpaceResultSheet: View {
             switch outcome.status {
             case .moved:
                 Label("Moved “\(outcome.name)” to the Trash, \(byteText(outcome.size))", systemImage: "trash").font(.headline)
-                Text(outcome.reason == "Moved without Put Back"
+                Text(outcome.movedWithoutPutBack
                      ? "Moved without Finder, so Put Back isn't available for it. Space is freed when you empty the Trash."
                      : "Space is freed when you empty the Trash. To restore it, right-click it in the Trash and choose Put Back.")
                     .font(.callout).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
@@ -327,7 +333,7 @@ struct SpaceResultSheet: View {
             }
             HStack {
                 if outcome.status == .moved {
-                    Button("Open Trash") { NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory() + "/.Trash")) }
+                    OpenTrashButton()
                 }
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
