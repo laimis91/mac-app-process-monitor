@@ -7,6 +7,10 @@
 //   APPMON_SCAN_ROOT=…  AppMonitor --leftovers-json      # Leftovers: groups, items, reasons
 //   APPMON_SCAN_ROOT=…  APPMON_SELECT="home/Library/Caches/com.x" AppMonitor --leftovers-clean
 //   APPMON_SCAN_ROOT=…  APPMON_SELECT="home/Projects/x" AppMonitor --space-trash
+//   APPMON_SCAN_ROOT=…  APPMON_UNINSTALL="Applications/X.app" AppMonitor --uninstall-json
+//   APPMON_SCAN_ROOT=…  APPMON_UNINSTALL=…  APPMON_DESELECT="home/Library/Caches/x" AppMonitor --uninstall-clean
+//
+// --uninstall-clean moves the pre-selected items (minus APPMON_DESELECT) plus APPMON_SELECT.
 //
 // --clean-json selects the pre-selected items plus the listed paths (relative to the root) and
 // rule IDs, then cleans them. Fixture mode is a dry run unless APPMON_FIXTURE_ACT=1.
@@ -20,12 +24,14 @@ enum Headless {
         let args = CommandLine.arguments
         guard args.contains("--scan-json") || args.contains("--clean-json") || args.contains("--space-json")
               || args.contains("--space-trash") || args.contains("--leftovers-json")
-              || args.contains("--leftovers-clean") else { return }
+              || args.contains("--leftovers-clean") || args.contains("--uninstall-json")
+              || args.contains("--uninstall-clean") else { return }
         // A read-only listing of the real Mac is allowed in a dry run (manual checks, spec 13).
         // Cleaning headlessly always needs a fixture tree.
         let realListing = CleanerConfig.fixtureRoot == nil && CleanerConfig.env["APPMON_DRY_RUN"] == "1"
-            && (args.contains("--leftovers-json") || args.contains("--scan-json"))
+            && (args.contains("--leftovers-json") || args.contains("--scan-json") || args.contains("--uninstall-json"))
             && !args.contains("--clean-json") && !args.contains("--leftovers-clean") && !args.contains("--space-trash")
+            && !args.contains("--uninstall-clean")
         guard let root = CleanerConfig.fixtureRoot ?? (realListing ? Roots.real().home : nil) else {
             FileHandle.standardError.write("Headless mode needs APPMON_SCAN_ROOT (a fixture tree)\n".data(using: .utf8)!)
             exit(2)
@@ -34,6 +40,9 @@ enum Headless {
         let ctx = CleanerConfig.context(limits: AgeLimits(), ignore: [], cancel: CancelFlag())
         if args.contains("--leftovers-json") || args.contains("--leftovers-clean") {
             leftovers(root, ctx, clean: args.contains("--leftovers-clean"))
+        }
+        if args.contains("--uninstall-json") || args.contains("--uninstall-clean") {
+            uninstall(root, ctx, clean: args.contains("--uninstall-clean"), real: CleanerConfig.fixtureRoot == nil)
         }
         var cats: [Category] = []
         let lock = NSLock()
@@ -105,6 +114,50 @@ enum Headless {
         let wanted = Set((ProcessInfo.processInfo.environment["APPMON_SELECT"] ?? "").split(separator: ",").map(String.init))
         var pairs: [(Category, CleanItem)] = []
         for c in cats { for i in c.items where i.preselected || wanted.contains(String(rel(i.path).dropFirst("<root>/".count))) { pairs.append((c, i)) } }
+        let result = Cleaner.clean(pairs, env: CleanerConfig.cleanEnvironment(ctx))
+        write(result.sorted { $0.path < $1.path }.map { o -> [String: Any] in
+            var e: [String: Any] = ["path": rel(o.path), "category": o.category, "status": o.status.rawValue, "kb": o.size / 1024]
+            if let r = o.reason { e["reason"] = r }
+            return e
+        })
+    }
+
+    /// The uninstaller's plan for APPMON_UNINSTALL (relative to the fixture root; an absolute
+    /// path only in a real-Mac dry-run listing), or a clean of it.
+    static func uninstall(_ root: String, _ ctx: ScanContext, clean: Bool, real: Bool) -> Never {
+        func rel(_ p: String) -> String { p.hasPrefix(root) ? "<root>" + p.dropFirst(root.count) : p }
+        let env = ProcessInfo.processInfo.environment
+        guard let u = env["APPMON_UNINSTALL"], !u.isEmpty else {
+            FileHandle.standardError.write("APPMON_UNINSTALL must name the app\n".data(using: .utf8)!); exit(2)
+        }
+        let path = real ? u : root + "/" + u
+        if let why = Uninstaller.refusal(path, roots: ctx.roots, selfIDs: Uninstaller.selfIDs) { write(["refused": why]) }
+        guard let plan = Uninstaller.plan(path, ctx: ctx, probes: CleanerConfig.uninstallProbes(ctx.roots)) else {
+            write(["refused": "no plan"])
+        }
+        let cats = plan.categories
+        guard clean else {
+            let t = plan.target
+            write(["ids": t.ids, "groups": t.groups, "copies": t.otherCopies.map(rel), "running": t.running,
+                   "categories": cats.map { c -> [String: Any] in
+                       var d: [String: Any] = ["id": c.id, "title": c.title, "group": c.group.rawValue]
+                       if let n = c.notice { d["notice"] = n }
+                       d["items"] = c.items.sorted { $0.path < $1.path }.map { i -> [String: Any] in
+                           ["path": rel(i.path), "risk": i.risk.rawValue, "kb": i.size / 1024, "selectable": i.selectable,
+                            "preselected": i.preselected, "reason": i.reason]
+                       }
+                       return d
+                   }])
+        }
+        func set(_ k: String) -> Set<String> { Set((env[k] ?? "").split(separator: ",").map(String.init)) }
+        let wanted = set("APPMON_SELECT"), unwanted = set("APPMON_DESELECT")
+        var pairs: [(Category, CleanItem)] = []
+        for c in cats {
+            for i in c.items {
+                let r = String(rel(i.path).dropFirst("<root>/".count))
+                if (i.preselected && !unwanted.contains(r)) || wanted.contains(r) { pairs.append((c, i)) }
+            }
+        }
         let result = Cleaner.clean(pairs, env: CleanerConfig.cleanEnvironment(ctx))
         write(result.sorted { $0.path < $1.path }.map { o -> [String: Any] in
             var e: [String: Any] = ["path": rel(o.path), "category": o.category, "status": o.status.rawValue, "kb": o.size / 1024]

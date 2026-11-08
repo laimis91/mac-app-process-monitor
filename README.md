@@ -51,6 +51,12 @@ memory in plain terms.
   LaunchServices or Spotlight know, launch jobs, plug-ins, running apps) and nothing of that app
   changed for 30 days. Nothing is pre-selected; uncertain matches are kept apart under
   "Possible leftovers". App containers are checked only with Full Disk Access.
+- **Uninstaller** (Disk tab → Uninstaller). Pick an app from Applications, or drop one onto the
+  Disk tab, to see the app and every file that belongs to it: caches, logs, settings, app data,
+  containers and launch agents, matched by its bundle IDs. Another app's files are never listed,
+  and data an app shares with another app is shown but kept. The app, its caches and its settings
+  are pre-selected; everything goes to the Trash, so Put Back works. Apps that come with macOS,
+  apps outside Applications and running apps are not removed.
 - Lightweight: uses about 1–3% of one CPU core.
 - Native SwiftUI, no dependencies, universal (Apple Silicon and Intel).
 

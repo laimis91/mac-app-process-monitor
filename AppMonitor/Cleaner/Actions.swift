@@ -192,6 +192,8 @@ struct CleanEnvironment {
     var batchSize = 100
     /// Checks items picked in the Space map instead of the rule-based path guard (6.4).
     var spaceGuard: SpaceGuard? = nil
+    /// Processes running from inside a folder (the uninstaller's app bundle, spec 10).
+    var processesInside: (String) -> [String] = ProcessList.inside
 }
 
 enum Cleaner {
@@ -331,8 +333,10 @@ enum Cleaner {
         if item.spaceMap {
             guard let g = env.spaceGuard else { return "No Space-map guard" }
             if let why = g.check(item.path) { return why }
-        } else if let why = env.guardian.check(item.path, allowRoot: item.allowRoot) { return why }
+        } else if let why = env.guardian.check(item.path, allowRoot: item.allowRoot, appBundle: item.appBundle) { return why }
         if ScanEngine.fileID(item.path) != item.fileID { return "Changed since the scan" }
+        // Uninstaller items: no process may run from inside the app's bundle, whatever its bundle ID (spec 10).
+        if let b = item.insideBundle, let who = env.processesInside(b).first { return "\(who) is running from inside the app" }
         return nil
     }
 

@@ -9,8 +9,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 FIX="$("$ROOT/scripts/make-fixtures.sh")"
+UFIX="$("$ROOT/scripts/make-fixtures.sh" --uninstall)"
 HOLDER=""
-cleanup() { rc=$?; [ -n "$HOLDER" ] && kill "$HOLDER" 2>/dev/null || true; chmod -R u+rwx "$FIX" 2>/dev/null; rm -rf "$WORK" "$FIX"; exit $rc; }
+cleanup() { rc=$?; [ -n "$HOLDER" ] && kill "$HOLDER" 2>/dev/null || true; chmod -R u+rwx "$FIX" 2>/dev/null; rm -rf "$WORK" "$FIX" "$UFIX"; exit $rc; }
 trap cleanup EXIT
 
 APPMON_OUT="$WORK/Debug.app" APPMON_ARCHS="$(uname -m)" APPMON_DEBUG=1 "$ROOT/AppMonitor/build.sh" >/dev/null 2>&1
@@ -251,5 +252,110 @@ moved = {x["path"] for x in json.load(open(sys.argv[1])) if x["status"] == "move
 listed = {i["path"] for c in json.load(open(sys.argv[2])) for i in c["items"]}
 assert moved and not (moved & listed), moved & listed
 PY
+
+# 9. Uninstaller (spec 10), on its own fixture tree
+urun() { APPMON_SCAN_ROOT="$UFIX" "$@"; }
+usnap() { (cd "$UFIX" && find . 2>/dev/null | sort) || true; }
+U="Applications/Vendor App.app"
+APPMON_UNINSTALL="$U" urun "$BIN" --uninstall-json > "$WORK/un.json"
+python3 - "$WORK/un.json" <<'PY' && ok "uninstaller lists the app and all its files, Pro's none, the shared group as Info (10 acceptance)" || bad "uninstaller plan"
+import json, sys
+d = json.load(open(sys.argv[1]))
+items = {i["path"].replace("<root>/", ""): (c["id"], i) for c in d["categories"] for i in c["items"]}
+L = "home/Library/"
+want = {
+    "Applications/Vendor App.app": ("U-APP", "Requested", True),
+    L + "Caches/com.uvendor.app": ("U-CACHE", "Safe", True),          # new data: no age limit
+    L + "Caches/com.uvendor.login": ("U-CACHE", "Safe", True),        # the login item's own ID
+    L + "Logs/com.uvendor.app": ("U-CACHE", "Safe", True),
+    L + "HTTPStorages/com.uvendor.app": ("U-CACHE", "Safe", True),
+    L + "WebKit/com.uvendor.app": ("U-CACHE", "Safe", True),
+    L + "Saved Application State/com.uvendor.app.savedState": ("U-CACHE", "Safe", True),
+    L + "Application Support/com.uvendor.app": ("U-DATA", "Review", True),
+    L + "Preferences/com.uvendor.app.plist": ("U-DATA", "Review", True),
+    L + "Cookies/com.uvendor.app.binarycookies": ("U-DATA", "Review", True),
+    L + "Containers/com.uvendor.app": ("U-MORE", "Review", False),
+    L + "Group Containers/group.com.uvendor.app": ("U-MORE", "Review", False),
+    L + "Application Scripts/com.uvendor.app": ("U-MORE", "Review", False),
+    L + "LaunchAgents/com.uvendor.app.agent.plist": ("U-MORE", "Review", False),
+    L + "Application Support/Vendor App": ("U-NAMED", "Review", False),
+    L + "Group Containers/ABCDE12345.com.uvendor.shared": ("U-KEPT", "Info", False),
+    "Library/LaunchDaemons/com.uvendor.app.daemon.plist": ("U-KEPT", "Info", False),
+    L + "Application Support/com.uvendor.app.bundled": ("U-KEPT", "Info", False),
+}
+assert set(items) == set(want), (set(items) ^ set(want))
+for p, (cat, risk, pre) in want.items():
+    c, i = items[p]
+    assert (c, i["risk"], i["preselected"]) == (cat, risk, pre), (p, c, i)
+    assert i["selectable"] == (risk != "Info"), (p, i)
+assert "Shared with Vendor App Pro" in items[L + "Group Containers/ABCDE12345.com.uvendor.shared"][1]["reason"]
+assert "Contains Other" in items[L + "Application Support/com.uvendor.app.bundled"][1]["reason"]
+assert d["ids"] == ["com.uvendor.app", "com.uvendor.login"], d["ids"]   # the library XPC service is left out
+assert not any("pro" in p or "sparkle" in p or "fake" in p or "unrelated" in p or p.endswith("helper.plist") for p in items), items.keys()
+PY
+
+python3 - "$BIN" "$UFIX" <<'PY' && ok "uninstaller refuses Apple, outside Applications, links and missing apps" || bad "uninstaller refusals"
+import json, os, subprocess, sys
+binp, fix = sys.argv[1], sys.argv[2]
+def plan(app):
+    env = dict(os.environ, APPMON_SCAN_ROOT=fix, APPMON_UNINSTALL=app)
+    return json.loads(subprocess.run([binp, "--uninstall-json"], env=env, capture_output=True, check=True).stdout)
+assert plan("Applications/Fake Safari.app")["refused"] == "Apps that come with macOS can't be removed."
+assert "own uninstaller" in plan("home/Library/Application Support/WebDeployed/Web Tool.app")["refused"]
+assert "link" in plan("Applications/Vendor Link.app")["refused"]
+assert "no longer there" in plan("Applications/Nope.app")["refused"]
+busy = plan("Applications/Busy.app")
+assert busy["running"] == ["Busy Helper"], busy
+assert all(not i["preselected"] for c in busy["categories"] for i in c["items"]), busy   # running helper: nothing pre-selected
+twin = plan("Applications/Twin.app")
+assert twin["copies"] == ["<root>/home/Applications/Twin.app"], twin
+PY
+
+APPMON_FIXTURE_FDA=denied APPMON_UNINSTALL="$U" urun "$BIN" --uninstall-json > "$WORK/un-nofda.json"
+python3 - "$WORK/un-nofda.json" <<'PY' && ok "uninstaller without FDA: containers not entered, notice shown" || bad "uninstaller FDA handling"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert any(c["id"] == "U-FDA" and c.get("notice") == "Needs Full Disk Access" for c in d["categories"]), d
+assert not any("Containers/" in i["path"] for c in d["categories"] for i in c["items"])
+PY
+
+MORE="home/Library/Containers/com.uvendor.app,home/Library/Group Containers/group.com.uvendor.app,home/Library/Application Scripts/com.uvendor.app,home/Library/LaunchAgents/com.uvendor.app.agent.plist,home/Library/Application Support/Vendor App,home/Library/Group Containers/ABCDE12345.com.uvendor.shared"
+before="$(usnap)"
+APPMON_UNINSTALL="Applications/Busy.app" APPMON_SELECT="Applications/Busy.app" urun "$BIN" --uninstall-clean > "$WORK/un-busy.json"
+APPMON_UNINSTALL="$U" APPMON_SELECT="$MORE" urun "$BIN" --uninstall-clean > "$WORK/un-dry.json"
+[ "$before" = "$(usnap)" ] && ok "uninstaller dry run changed nothing" || bad "uninstaller dry run changed the tree"
+python3 - "$WORK/un-dry.json" "$WORK/un-busy.json" <<'PY' && ok "uninstaller dry run: everything picked planned, Info refused, running app skipped" || bad "uninstaller dry run plan"
+import json, sys
+o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
+assert len(o) == 16, len(o)
+for k, v in o.items():
+    if k.endswith("ABCDE12345.com.uvendor.shared"):
+        assert v["status"] == "skipped", v
+    else:
+        assert v["status"] == "planned", (k, v)
+b = json.load(open(sys.argv[2]))
+assert [x["status"] for x in b] == ["skipped"] and b[0]["reason"] == "Busy Helper is running", b
+PY
+
+APPMON_FIXTURE_ACT=1 APPMON_UNINSTALL="$U" APPMON_SELECT="$MORE" urun "$BIN" --uninstall-clean > "$WORK/un-act.json"
+python3 - "$WORK/un-act.json" "$WORK/un.json" "$UFIX" <<'PY' && ok "uninstaller act: the app and its files moved, sizes match, other apps' files stay" || bad "uninstaller act"
+import json, os, sys
+o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
+scan = {i["path"].replace("<root>/", ""): i["kb"] for c in json.load(open(sys.argv[2]))["categories"] for i in c["items"]}
+fix = sys.argv[3]
+moved = [k for k, v in o.items() if v["status"] == "moved"]
+assert len(moved) == 15 and "Applications/Vendor App.app" in moved, o
+for k in moved:
+    assert not os.path.lexists(os.path.join(fix, k)), k
+    assert o[k]["kb"] == scan[k], (k, o[k]["kb"], scan[k])
+L = "home/Library/"
+for k in ["Applications/Vendor App Pro.app", L + "Caches/com.uvendor.app.pro", L + "Application Support/com.uvendor.app.pro",
+          L + "Preferences/com.uvendor.app.pro.plist", L + "LaunchAgents/helper.plist", L + "Containers/com.uvendor.app.fake",
+          L + "Group Containers/ABCDE12345.com.uvendor.shared", "Library/LaunchDaemons/com.uvendor.app.daemon.plist",
+          L + "Application Support/com.uvendor.app.bundled", L + "Caches/org.sparkle-project.Sparkle", L + "Caches/com.unrelated.tool"]:
+    assert os.path.lexists(os.path.join(fix, k)), k
+PY
+APPMON_UNINSTALL="$U" urun "$BIN" --uninstall-json > "$WORK/un-after.json"
+grep -q "no longer there" "$WORK/un-after.json" && ok "uninstaller: the moved app is gone" || bad "uninstaller re-plan"
 
 [ "$fail" = 0 ] && echo "fixture-test: all passed" || { echo "fixture-test: FAILED"; exit 1; }

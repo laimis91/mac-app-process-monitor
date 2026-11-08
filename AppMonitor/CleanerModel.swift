@@ -4,10 +4,20 @@ import SwiftUI
 import AppKit
 
 /// The Disk tab's views (spec 4.2).
-enum DiskView: String, CaseIterable { case junk = "Junk", leftovers = "Leftovers", spaceMap = "Space map" }
+enum DiskView: String, CaseIterable {
+    case junk = "Junk", leftovers = "Leftovers", uninstall = "Uninstaller", spaceMap = "Space map"
+}
 
-/// What a results list holds: junk rules (spec 7) or the leftovers finder (spec 9).
-enum CleanerKind { case junk, leftovers }
+/// What a results list holds: junk rules (spec 7), the leftovers finder (spec 9) or the files of
+/// one app being uninstalled (spec 10).
+enum CleanerKind { case junk, leftovers, uninstall }
+
+/// An app the user can pick in the Uninstaller, with the reason it can't be uninstalled, if any.
+struct AppChoice: Identifiable {
+    let app: AppInfo
+    let refusal: String?
+    var id: String { app.path }
+}
 
 /// One results list with its own scan, selection and clean. The junk model owns the settings and
 /// the ignore list and holds the leftovers model as `leftovers`; both use the same row views.
@@ -17,6 +27,7 @@ final class CleanerModel: ObservableObject {
         switch ProcessInfo.processInfo.environment["APPMON_DISKVIEW"] {
         case "space": return .spaceMap
         case "leftovers": return .leftovers
+        case "uninstall": return .uninstall
         default: return .junk
         }
     }()
@@ -41,8 +52,19 @@ final class CleanerModel: ObservableObject {
 
     let kind: CleanerKind
     private weak var owner: CleanerModel?          // the junk model, for the leftovers model
+    // Uninstaller state (uninstall model only)
+    @Published var choices: [AppChoice] = []
+    @Published var loadingChoices = false
+    @Published var target: UninstallTarget?
+    @Published var refusal: String?          // why the last dropped or picked app can't be uninstalled
+    private(set) var targetPath: String?
+
     /// The leftovers list (junk model only).
     private(set) lazy var leftovers: CleanerModel = CleanerModel(kind: .leftovers, owner: self)
+    /// The uninstaller's list (junk model only).
+    private(set) lazy var uninstaller: CleanerModel = CleanerModel(kind: .uninstall, owner: self)
+    /// Every results list, for changes that concern them all.
+    private var lists: [CleanerModel] { [root, root.leftovers, root.uninstaller] }
     private var root: CleanerModel { owner ?? self }
     /// The age limits the next scan uses (the junk model's settings).
     var limitsInUse: AgeLimits { root.limits }
@@ -63,7 +85,11 @@ final class CleanerModel: ObservableObject {
         ignore = defaults.stringArray(forKey: "ignoredItems") ?? []
         saveLimits()
         if demoMode {
-            categories = kind == .junk ? Demo.diskCategories() : Demo.leftoverCategories()
+            switch kind {
+            case .junk: categories = Demo.diskCategories()
+            case .leftovers: categories = Demo.leftoverCategories()
+            case .uninstall: (target, categories) = Demo.uninstall()
+            }
             selected = Set(categories.flatMap(\.items).filter(\.preselected).map(\.id))
             fda = .denied
             lastScan = Date()
@@ -97,7 +123,8 @@ final class CleanerModel: ObservableObject {
 
     func scan() {
         guard !scanning, !cleaning else { return }
-        if demoMode { categories = kind == .junk ? Demo.diskCategories() : Demo.leftoverCategories(); lastScan = Date(); return }
+        if demoMode { lastScan = Date(); return }
+        if kind == .uninstall && targetPath == nil { loadChoices(); return }
         refreshFDA()
         let flag = CancelFlag()
         cancel = flag
@@ -110,6 +137,24 @@ final class CleanerModel: ObservableObject {
         Task.detached(priority: .utility) { [self] in
             let ctx = CleanerConfig.context(limits: limits, ignore: ignore, cancel: flag)
             await MainActor.run { self.context = ctx }
+            if kind == .uninstall, let path = await MainActor.run(body: { self.targetPath }) {
+                let result = Uninstaller.plan(path, ctx: ctx, probes: CleanerConfig.uninstallProbes(ctx.roots)) { text in
+                    Task { @MainActor in self.progress = text }
+                }
+                await MainActor.run {
+                    if !flag.isSet, let result, self.targetPath == path {
+                        self.target = result.target
+                        self.categories = result.categories
+                        self.selected = Set(result.categories.flatMap(\.items).filter(\.preselected).map(\.id))
+                    }
+                    self.scanning = false
+                    self.progress = flag.isSet ? "Stopped" : ""
+                    self.lastScan = Date()
+                    if flag.isSet && self.target == nil { self.targetPath = nil; self.lastScan = nil }   // back to the app list
+                    if result == nil { self.refusal = "This app is no longer there."; self.chooseAnother() }
+                }
+                return
+            }
             if kind == .leftovers {
                 let result = Leftovers.scan(ctx) { text in Task { @MainActor in self.progress = text } }
                 await MainActor.run {
@@ -131,6 +176,53 @@ final class CleanerModel: ObservableObject {
                 self.lastScan = Date()
             }
         }
+    }
+
+    // MARK: Uninstaller (spec 10)
+
+    /// Lists the apps in /Applications and ~/Applications.
+    func loadChoices() {
+        guard !loadingChoices else { return }
+        if demoMode { return }
+        loadingChoices = true
+        Task.detached(priority: .userInitiated) { [self] in
+            let list = Uninstaller.choices(CleanerConfig.roots, selfIDs: Uninstaller.selfIDs).map { AppChoice(app: $0.app, refusal: $0.refusal) }
+            await MainActor.run { self.choices = list; self.loadingChoices = false }
+        }
+    }
+
+    /// Picks the app to uninstall (dropped onto the Disk tab or chosen from the list), then lists its files.
+    func choose(_ path: String) {
+        guard !scanning, !cleaning else { return }
+        if let why = Uninstaller.refusal(path, roots: CleanerConfig.roots, selfIDs: Uninstaller.selfIDs) {
+            refusal = "\(URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent): \(why)"
+            return
+        }
+        refusal = nil
+        targetPath = Uninstaller.located(path)
+        target = nil            // the previous app's header and Quit button go away at once
+        categories = []
+        selected = []
+        scan()
+    }
+
+    /// Back to the app list.
+    func chooseAnother() {
+        guard !scanning, !cleaning else { return }
+        targetPath = nil
+        target = nil
+        categories = []
+        selected = []
+        lastScan = nil
+        loadChoices()
+    }
+
+    /// Quits the app being uninstalled and its helpers, then lists its files again.
+    func quitTarget() {
+        guard let t = target, t.app.path == targetPath, !scanning else { return }
+        let ids = CleanerConfig.runningApps().filter { r in t.ids.contains { BundleIDs.related(r.id, $0) } }.map(\.id)
+        quit(ids)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.scan() }
     }
 
     nonisolated static func progressText(_ id: String) -> String {
@@ -226,8 +318,9 @@ final class CleanerModel: ObservableObject {
             }
             await MainActor.run {
                 let done = Set(result.filter { $0.status == .moved || $0.status == .ran }.map(\.path))
-                // Both lists can show the same folder (a cache of a removed app), so both drop it.
-                for list in [self.root, self.root.leftovers] { list.removeMoved(done) }
+                // The lists can show the same folder (a cache of a removed app), so all drop it.
+                for list in self.lists { list.removeMoved(done) }
+                if self.kind == .uninstall, done.contains(where: { $0 == self.targetPath }) { self.choices.removeAll { $0.id == self.targetPath } }
                 self.lastRunWasDry = env.dryRun
                 self.outcomes = result
                 self.cleaning = false
@@ -251,7 +344,7 @@ final class CleanerModel: ObservableObject {
         guard !r.ignore.contains(where: { $0.caseInsensitiveCompare(item.path) == .orderedSame }) else { return }
         r.ignore.append(item.path)
         r.defaults.set(r.ignore, forKey: "ignoredItems")
-        for list in [r, r.leftovers] {
+        for list in lists {
             list.selected.remove(item.id)
             for i in list.categories.indices { list.categories[i].items.removeAll { $0.id == item.id } }
             list.categories.removeAll { $0.items.isEmpty && $0.notice == nil }

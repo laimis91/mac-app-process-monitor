@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Phase 1 shipped in 1.1.0. Phase 2 (Space map) and phase 3 (Leftovers finder, section 9.5) implemented. Phase 5 (stable signing) implemented; its Full Disk Access acceptance test is pending (section 11). Phase 4 not started. |
+| **Status** | Phase 1 shipped in 1.1.0. Phase 2 (Space map), phase 3 (Leftovers finder, section 9.5) and phase 4 (Uninstaller, section 10.1) implemented. Phase 5 (stable signing) implemented; its Full Disk Access acceptance test is pending (section 11). |
 | **Applies to** | App Monitor 1.x (SwiftUI, macOS 14+, not sandboxed) |
 | **Delivery** | Five phases, each shippable on its own (section 12) |
 
@@ -230,6 +230,7 @@ A Settings window (App menu → Settings…, ⌘,) with:
 | `Cleaner/InstalledApps.swift` | Installed and running app inventory and bundle-ID key parsing (section 9.2). Delivered in phase 1, because S7 needs it |
 | `Cleaner/LeftoverMatcher.swift` | Matches folders to apps; orphan decision (phase 3) |
 | `Cleaner/Leftovers.swift` | Leftovers disk side: listing, measuring, extra probes, categories (phase 3) |
+| `Cleaner/Uninstaller.swift` | Uninstaller: refusals, target ID set, matching, categories, entitlement and process probes (phase 4) |
 | `Cleaner/Actions.swift` | Trash mover, tool-command runner, path guard |
 | `Cleaner/Permissions.swift` | FDA detection and the Settings link |
 | `Cleaner/SpaceMap.swift` | Space map tree, scanner and Space-map guard (phase 2, section 8.1) |
@@ -757,6 +758,93 @@ container also claimed by a second installed fixture app is shown as shared and 
 With fixture apps `com.vendor.app` and `com.vendor.app.pro` both installed, uninstalling
 `com.vendor.app` lists none of `com.vendor.app.pro`'s files.
 
+### 10.1 Implementation (phase 4)
+
+- **Files.** `Cleaner/Uninstaller.swift` (AppKit-free): refusals, the target ID set, ownership,
+  the plan and its categories, entitlements (Security framework) and the process probe.
+  `CleanerModel` gets a third list (`uninstaller`) and the Disk tab a fourth view, **Uninstaller**.
+  The view lists the apps in `/Applications` and `~/Applications` (refused apps greyed, with the
+  reason; apps with `com.apple.` IDs aren't listed). An app dropped anywhere on the Disk tab
+  opens in it. After an app is picked, its files are listed in the usual result rows, under
+  "Files of this app" and "Shown only, not moved".
+- **Categories.** The app bundle (Requested), "Caches, logs and saved state" (Safe), "Settings and
+  data" (Review, pre-selected), "Containers, scripts and launch agents" (Review), "Named like
+  <App>" (Review) and "Not moved" (Info). Selection rule: `preselected` is true for Safe and
+  Requested items, and for Review items only when the uninstaller marks them (`preselect`); never
+  for tool commands, Info items, or items whose app is running.
+- **Ownership.** An item's key, container metadata ID or launchd label must dot-prefix-match a
+  target ID. The longest matching ID decides; on a tie the other app wins, so an ID that another
+  installed app also embeds is never treated as the target's. Other apps are every installed app
+  (except copies of the target) with all their embedded bundles (`AppInventory.embeddedAll`), and
+  plug-ins and apps found inside Application Support (probe 7 and the 9.2 extras).
+- **Path guard.** `PathGuard.appRoots` (`/Applications`, `~/Applications`) accept only items with
+  `appBundle` set whose name ends in `.app`, strictly inside the root; app-bundle items are
+  accepted by no other root. Both app roots are also denied as folders themselves.
+- **Running checks.** The app counts as running if a running app's bundle ID is related to a
+  target ID, or if any process's executable (from `proc_pidpath`, any user) is inside the bundle.
+  While it runs, nothing is pre-selected and a banner offers **Quit** (off in a dry run and in
+  fixture mode) and **Check again**. At action time every item is re-checked by bundle ID, the
+  open-file snapshot covers all items (including the app's mapped executable), and the bundle is
+  checked for processes inside it once more right before the move.
+- **Deviations from section 10, all towards keeping:**
+  - **Library IDs left out of the target set.** An embedded bundle whose ID is on the protection
+    list (Sparkle, analytics SDKs, …) and isn't under the app's own ID isn't a target ID, because
+    other apps embed the same library.
+  - **Container metadata must equal a target ID** (not just dot-prefix-match it), as section 10
+    says, and a container without readable metadata isn't listed.
+  - **Group Containers** match by the entitlement list *or* by key (for example
+    `group.com.vendor.app`). Either way, a group another app's entitlements claim is Info,
+    "Shared with <App>".
+  - **Folders named after the app** (Application Support, Caches, Logs, HTTPStorages, WebKit) are
+    listed as Review, not pre-selected, in "Named like <App>". The name must equal one of the
+    app's names (name, display name, executable, file name) without case, spaces, dots, hyphens
+    or underscores, be at least 4 characters, and belong to no other installed app.
+  - **Anything that would make the move unsafe is Info** with its reason: the `/Library` places
+    (needs administrator rights, section 3.3), an app bundle inside the item (any app, depth 3),
+    always-protected contents (6.4), unreadable parts, a socket or pipe, a locked file, or an item
+    the user can't move. An app bundle that can't be read in full or holds a locked file is Info too.
+  - **Other copies** keep the selection, as section 10 says: the warning is shown above the list
+    and again in the confirmation sheet.
+- **Review fixes.** The first independent review found:
+  - a helper app inside another app's bundle could be dropped and moved: refused ("part of another
+    app"), and the app-root guard now denies any bundle with a bundle folder above it;
+  - a process running from inside the bundle blocked only the bundle at action time: every
+    uninstaller item now records its bundle (`insideBundle`) and is skipped while anything runs
+    from it;
+  - an app known only to LaunchServices (installed outside the scanned folders) could lose data
+    to the target: a key longer than the target ID it matched is now looked up, and its owner wins;
+  - a failed process listing counted as "nothing running": it now counts as running (S5);
+  - after picking another app, the previous app's header and Quit button stayed until the new
+    plan arrived: they are cleared at once, and Quit acts only on the app shown;
+  - Quit is offered only when a running app was found by bundle ID; for an app matched by name
+    alone, or processes found by path, the banner says to quit them in Activity Monitor.
+
+  The final review of these fixes found that Quit could still show for a match by name alone, and
+  that the nested-bundle check also looked at folders above the Applications root. Both are
+  fixed: only folders between the app root and the app count.
+- **Limits.** Entitlements are read from the code signature; an unsigned or unreadable app has
+  none, so a group container shared by an unsigned app isn't detected as shared. Group
+  containers are never pre-selected, which covers this. Processes of other users are found by
+  executable path only as far as macOS reports them.
+- **Testing.** `scripts/selftest.sh` checks ownership (longest ID, ties, partial components),
+  the kinds table, name keys, the refusals (Apple IDs, `/System/Applications`, outside
+  Applications, App Monitor itself, a bundle the user can't move, links, non-apps), the app list,
+  the target ID set, the plan on a small tree (each kind, shared group, item holding an app,
+  `/Library`, no age limits, no FDA, a running helper, a process inside the bundle, the `.pro`
+  case), the app-root path guard, and the selection rules. `scripts/make-fixtures.sh --uninstall`
+  builds a separate tree with ad-hoc signed apps carrying app-group entitlements, and
+  `scripts/fixture-test.sh` checks the section 10 acceptance with `--uninstall-json`
+  (`APPMON_UNINSTALL=<relative path>`), the refusals, a running helper, two copies, no FDA, a dry
+  run, an act with `--uninstall-clean`, and that the moved app is gone.
+- **Measured** (debug build, dry-run plans of every app in `/Applications` and `~/Applications` of
+  one Mac, without Full Disk Access, after the review fixes): 51 apps; 24 planned and 27 refused
+  (20 the user can't move, such as App Store apps, 4 iPhone and iPad apps, 1 helper inside another
+  app, 1 link, App Monitor itself). The 24 plans list 111 items: 36 pre-selected, 9 Info, and the
+  rest selectable but not pre-selected (Review rows, and every row of the 9 apps that were
+  running); 11 of them are "Named like" folders, each checked by hand to belong to its app. No
+  file appears in two apps' plans. 1 app has a second copy. A plan takes 0.04 s (median), at
+  most 0.8 s.
+
 ## 11. Phase 5: Stable code signing
 
 **Problem.** An ad-hoc signature's designated requirement is a build hash
@@ -874,6 +962,8 @@ The repo has no automated tests today.
   ambiguous and running apps' data), runs it without FDA and with Spotlight failing, and does a
   dry run, an act and a re-scan with `--leftovers-clean`. A debug build with `APPMON_DRY_RUN=1`
   and no fixture root lists the real Mac read-only (`--leftovers-json`, `--scan-json`).
+- **Uninstaller** (phase 4): see section 10.1. A debug build with `APPMON_DRY_RUN=1` and no
+  fixture root also plans a real app read-only (`--uninstall-json`, `APPMON_UNINSTALL=<path>`).
 - **Space map** (phase 2): `scripts/selftest.sh` checks the Space-map guard rules and its disk
   checks, sizes against `du -kx`, hard links, listing limits, roll-up of totals and
   protections, and one-item clean dry runs. `scripts/fixture-test.sh` adds a Space-map scan of the
