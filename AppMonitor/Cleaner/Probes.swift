@@ -187,7 +187,10 @@ enum ToolRunner {
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }
         // No other descriptor reaches the child; default signal handling, nothing blocked.
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+        // Its own process group, so a timeout stops the tool's helpers too (killpg).
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK
+                                              | POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setpgroup(&attr, 0)
         var none = sigset_t(); sigemptyset(&none)
         posix_spawnattr_setsigmask(&attr, &none)
         var all = sigset_t(); sigfillset(&all)
@@ -215,22 +218,24 @@ enum ToolRunner {
             if d.isEmpty { h.readabilityHandler = nil; eof.signal(); return }
             lock.lock(); if data.count < 200_000 { data.append(d) }; lock.unlock()
         }
-        final class Exit: @unchecked Sendable { var status: Int32 = 0 }
+        final class Exit: @unchecked Sendable { var status: Int32 = 0; var reaped = false }
         let exit = Exit()
         let done = DispatchSemaphore(value: 0)
         DispatchQueue.global(qos: .utility).async {
             var st: Int32 = 0
-            while waitpid(pid, &st, 0) < 0 && errno == EINTR {}
+            var r: pid_t
+            repeat { r = waitpid(pid, &st, 0) } while r < 0 && errno == EINTR
             exit.status = st
+            exit.reaped = r == pid   // otherwise the exit status is unknown: never report success
             done.signal()
         }
         var timedOut = false
         var exited = true
         if done.wait(timeout: .now() + timeout) == .timedOut {
             timedOut = true
-            kill(pid, SIGTERM)
+            killpg(pid, SIGTERM)
             if done.wait(timeout: .now() + 5) == .timedOut {
-                kill(pid, SIGKILL)
+                killpg(pid, SIGKILL)
                 exited = done.wait(timeout: .now() + 5) == .success
             }
         }
@@ -239,6 +244,8 @@ enum ToolRunner {
         lock.lock(); let text = String(decoding: data, as: UTF8.self); lock.unlock()
         let st = exit.status
         let code = (st & 0x7f) == 0 ? (st >> 8) & 0xff : st & 0x7f   // exit code, or the signal that ended it
+        if timedOut { killpg(pid, SIGKILL) }   // helpers the tool left behind
+        if !timedOut && exited && !exit.reaped { return Result(status: -1, output: text, timedOut: false) }
         return Result(status: timedOut || !exited ? -2 : code, output: text, timedOut: timedOut)
     }
 }

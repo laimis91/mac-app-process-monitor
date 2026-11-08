@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rc=$?; rm -rf "$TMP"; exit $rc' EXIT
 APP="$TMP/App Monitor.app"
-APPMON_OUT="$APP" APPMON_DEBUG=1 APPMON_ARCHS="$(uname -m)" "$ROOT/AppMonitor/build.sh"
+env -u APPMON_SIGN_IDENTITY -u APPMON_SIGN_KEYCHAIN -u APPMON_RELEASE APPMON_OUT="$APP" APPMON_DEBUG=1 APPMON_ARCHS="$(uname -m)" "$ROOT/AppMonitor/build.sh"
 SHOT="$TMP/shot.png"
 OUT="$ROOT/docs/screenshot.png"
 open -n "$APP" --env APPMON_DEMO=1 --env APPMON_CAPTURE="$SHOT"

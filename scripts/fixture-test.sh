@@ -23,7 +23,7 @@ WORK="$(mktemp -d)"
 FIX="$("$ROOT/scripts/make-fixtures.sh")"
 UFIX="$("$ROOT/scripts/make-fixtures.sh" --uninstall)"
 
-if ! APPMON_OUT="$WORK/Debug.app" APPMON_ARCHS="$(uname -m)" APPMON_DEBUG=1 "$ROOT/AppMonitor/build.sh" > "$WORK/build.log" 2>&1; then
+if ! env -u APPMON_SIGN_IDENTITY -u APPMON_SIGN_KEYCHAIN -u APPMON_RELEASE APPMON_OUT="$WORK/Debug.app" APPMON_ARCHS="$(uname -m)" APPMON_DEBUG=1 "$ROOT/AppMonitor/build.sh" > "$WORK/build.log" 2>&1; then
   cat "$WORK/build.log" >&2
   echo "fixture-test: debug build failed" >&2
   exit 1

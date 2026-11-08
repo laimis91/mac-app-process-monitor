@@ -150,6 +150,12 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         eq(ToolRunner.run("/nonexistent/tool", []).status, -1, "missing executable")
         // A descriptor of this process (not close-on-exec) isn't open in the child.
         let fd = open("/dev/null", O_RDONLY)
+        // A timeout stops the tool's helpers too: the background sleep must not survive the run.
+        let marker = NSTemporaryDirectory() + "appmon-pg-\(getpid())"
+        _ = ToolRunner.run("/bin/sh", ["-c", "(sleep 3; touch \(marker)) & sleep 30"], timeout: 0.5)
+        Thread.sleep(forTimeInterval: 3.5)
+        check(!FileManager.default.fileExists(atPath: marker), "timeout stops the tool's whole process group")
+        try? FileManager.default.removeItem(atPath: marker)
         let fds = ToolRunner.run("/bin/sh", ["-c", "[ -e /dev/fd/\(fd) ] && echo open || echo closed"], timeout: 10)
         close(fd)
         eq(fds.output, "closed\n", "only stdin, stdout and stderr reach the child")

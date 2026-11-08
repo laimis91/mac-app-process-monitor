@@ -12,6 +12,12 @@ if [ "${APPMON_RELEASE:-}" = "1" ] && [ -z "${APPMON_SIGN_IDENTITY:-}" ]; then
   echo "APPMON_RELEASE=1 needs APPMON_SIGN_IDENTITY: release builds must not be ad-hoc signed." >&2
   exit 1
 fi
+# A debug build has the developer switches (headless listing, window capture). Signed with the
+# release certificate it would get the release app's Full Disk Access, so debug builds are ad-hoc only.
+if [ "${APPMON_DEBUG:-}" = "1" ] && { [ -n "${APPMON_SIGN_IDENTITY:-}" ] || [ "${APPMON_RELEASE:-}" = "1" ]; }; then
+  echo "APPMON_DEBUG=1 can't be combined with APPMON_SIGN_IDENTITY or APPMON_RELEASE: debug builds are ad-hoc signed only." >&2
+  exit 1
+fi
 APP="${APPMON_OUT:-App Monitor.app}"   # APPMON_OUT: build somewhere else (fixture tests)
 # The build starts with rm -rf "$APP": refuse anything that isn't an app bundle path.
 [[ "$APP" == *?.app ]] || { echo "APPMON_OUT must end in .app, got: $APP" >&2; exit 1; }
