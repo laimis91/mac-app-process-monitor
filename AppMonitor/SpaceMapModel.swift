@@ -96,8 +96,9 @@ final class SpaceMapModel: ObservableObject {
 
     // MARK: Navigation (from cached data, no disk access)
 
+    /// Not while a move runs: the item being moved could otherwise stay in the trail.
     func open(_ n: SpaceNode) {
-        guard n.isDir, n.hasContents else { return }
+        guard n.isDir, n.hasContents, !acting else { return }
         trail.append(n)
         filter = ""
     }
@@ -137,7 +138,7 @@ final class SpaceMapModel: ObservableObject {
         pending = nil
         if let busy = busyReason { refusal = Refusal(name: n.name, reason: busy); return }
         if demoMode {
-            n.parent?.remove(n); version += 1
+            removed(n)
             result = Outcome(path: n.path, name: n.name, category: SpaceMap.categoryID, status: .moved, size: n.size)
             return
         }
@@ -150,11 +151,18 @@ final class SpaceMapModel: ObservableObject {
         Task.detached(priority: .userInitiated) { [self] in
             let out = Cleaner.clean([pair], env: env).first
             await MainActor.run {
-                if out?.status == .moved { n.parent?.remove(n); self.version += 1 }
+                if out?.status == .moved { self.removed(n) }
                 self.result = out ?? Outcome(path: n.path, name: n.name, category: SpaceMap.categoryID,
                                              status: .failed, reason: "No answer")
                 self.acting = false
             }
         }
+    }
+
+    /// Takes a moved item out of the tree, and out of the drill-down path if it is in it.
+    private func removed(_ n: SpaceNode) {
+        n.parent?.remove(n)
+        if let i = trail.firstIndex(where: { $0 === n }) { trail = Array(trail.prefix(i)); filter = "" }
+        version += 1
     }
 }

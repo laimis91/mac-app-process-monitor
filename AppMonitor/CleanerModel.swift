@@ -19,22 +19,38 @@ struct AppChoice: Identifiable {
     var id: String { app.path }
 }
 
+/// What a category row and its checkbox show, computed once each time the categories change.
+struct CategorySummary {
+    let count: Int                  // items it was computed from (a filtered copy has fewer)
+    let risk: Risk
+    let checkboxIDs: [String]       // what the category checkbox selects (spec 4.2)
+    let trashIDs: [String]          // every item that can go to the Trash now (context menu "Select All")
+    let hasSafe: Bool
+    let size: Int64
+}
+
 /// One results list with its own scan, selection and clean. The junk model owns the settings and
-/// the ignore list and holds the leftovers model as `leftovers`; both use the same row views.
+/// the ignore list and holds the leftovers and uninstaller models; all three use the same row views.
 @MainActor
 final class CleanerModel: ObservableObject {
     @Published var view: DiskView = {
+        #if APPMON_DEBUG
         switch ProcessInfo.processInfo.environment["APPMON_DISKVIEW"] {
         case "space": return .spaceMap
         case "leftovers": return .leftovers
         case "uninstall": return .uninstall
-        default: return .junk
+        default: break
         }
+        #endif
+        return .junk
     }()
-    @Published var categories: [Category] = []
+    @Published var categories: [Category] = [] { didSet { categoriesChanged() } }
     @Published var scanning = false
+    @Published private(set) var stopped = false      // the last scan was stopped before it finished
     @Published var progress = ""
-    @Published var selected: Set<String> = []
+    @Published var selected: Set<String> = [] { didSet { selectionChanged() } }
+    @Published private(set) var selectedSize: Int64 = 0
+    @Published private(set) var reclaimable: Int64 = 0
     @Published var fda: FDAStatus = .unknown
     @Published var bannerHidden = false
     @Published var lastScan: Date?
@@ -44,6 +60,8 @@ final class CleanerModel: ObservableObject {
     @Published var lastRunWasDry = false
     @Published private(set) var limits: AgeLimits
     @Published private(set) var ignore: [String]
+    @Published private(set) var diskTick = 0          // junk model: bumped when free space may have changed
+    @Published private(set) var previews: [String: String] = [:]   // tool previews by category, for this session
     // List state, kept here so it survives switching views
     @Published var search = ""
     @Published var expanded: Set<String> = []
@@ -51,7 +69,7 @@ final class CleanerModel: ObservableObject {
     @Published var possibleOpen = false
 
     let kind: CleanerKind
-    private weak var owner: CleanerModel?          // the junk model, for the leftovers model
+    private weak var owner: CleanerModel?          // the junk model, for the other two lists
     // Uninstaller state (uninstall model only)
     @Published var choices: [AppChoice] = []
     @Published var loadingChoices = false
@@ -68,9 +86,16 @@ final class CleanerModel: ObservableObject {
     private var root: CleanerModel { owner ?? self }
     /// The age limits the next scan uses (the junk model's settings).
     var limitsInUse: AgeLimits { root.limits }
+    /// The filter text without surrounding spaces; empty means no filter.
+    var query: String { search.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var cancel: CancelFlag?
     private var context: ScanContext?
+    private var summaries: [String: CategorySummary] = [:]
+    private var itemSizes: [String: Int64] = [:]
+    private var movedWhileScanning: Set<String> = []   // moved by another list while this one scans
+    private var cleanConfirmed = false
+    private var activeObserver: NSObjectProtocol?
     let dryRun = CleanerConfig.dryRun
     private let defaults = UserDefaults.standard
 
@@ -94,8 +119,13 @@ final class CleanerModel: ObservableObject {
             fda = .denied
             lastScan = Date()
         }
-        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { if self?.active == true { self?.refreshFDA() } }
+        categoriesChanged()   // property observers don't run during init
+        // Full Disk Access is shown from the junk model only, so only it refreshes on activation.
+        if kind == .junk {
+            activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                                    object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { if self?.active == true { self?.refreshFDA() } }
+            }
         }
     }
 
@@ -119,18 +149,27 @@ final class CleanerModel: ObservableObject {
         if let u = URL(string: Permissions.settingsFallbackURL) { NSWorkspace.shared.open(u) }
     }
 
+    /// Free space may have changed: the Disk panel reads it again.
+    func diskChanged() { root.diskTick += 1 }
+
     // MARK: Scanning
 
     func scan() {
         guard !scanning, !cleaning else { return }
-        if demoMode { lastScan = Date(); return }
+        if demoMode { lastScan = Date(); stopped = false; return }
         if kind == .uninstall && targetPath == nil { loadChoices(); return }
-        refreshFDA()
+        root.refreshFDA()
         let flag = CancelFlag()
         cancel = flag
         scanning = true
-        categories = []
-        selected = []
+        stopped = false
+        movedWhileScanning = []
+        // The uninstaller keeps the app's earlier list until the new one arrives, so a stopped
+        // re-scan leaves it usable. `choose` clears it when another app is picked.
+        if kind != .uninstall {
+            categories = []
+            selected = []
+        }
         progress = "Starting…"
         let limits = root.limits, ignore = root.ignore
         let kind = self.kind
@@ -143,13 +182,12 @@ final class CleanerModel: ObservableObject {
                 }
                 await MainActor.run {
                     if !flag.isSet, let result, self.targetPath == path {
+                        let cats = self.withoutMoved(result.categories)
                         self.target = result.target
-                        self.categories = result.categories
-                        self.selected = Set(result.categories.flatMap(\.items).filter(\.preselected).map(\.id))
+                        self.categories = cats
+                        self.selected = Set(cats.flatMap(\.items).filter(\.preselected).map(\.id))
                     }
-                    self.scanning = false
-                    self.progress = flag.isSet ? "Stopped" : ""
-                    self.lastScan = Date()
+                    self.finishScan(stopped: flag.isSet, dated: true)
                     if flag.isSet && self.target == nil { self.targetPath = nil; self.lastScan = nil }   // back to the app list
                     if result == nil { self.refusal = "This app is no longer there."; self.chooseAnother() }
                 }
@@ -158,10 +196,9 @@ final class CleanerModel: ObservableObject {
             if kind == .leftovers {
                 let result = Leftovers.scan(ctx) { text in Task { @MainActor in self.progress = text } }
                 await MainActor.run {
-                    if !flag.isSet { self.categories = result.categories }
-                    self.scanning = false
-                    self.progress = flag.isSet ? "Stopped" : ""
-                    self.lastScan = Date()
+                    if !flag.isSet { self.categories = self.withoutMoved(result.categories) }
+                    // A stopped leftovers scan lists nothing, so it doesn't count as a scan.
+                    self.finishScan(stopped: flag.isSet, dated: !flag.isSet)
                 }
                 return
             }
@@ -170,12 +207,17 @@ final class CleanerModel: ObservableObject {
             }, found: { c in
                 Task { @MainActor in self.add(c) }
             })
-            await MainActor.run {
-                self.scanning = false
-                self.progress = flag.isSet ? "Stopped" : ""
-                self.lastScan = Date()
-            }
+            await MainActor.run { self.finishScan(stopped: flag.isSet, dated: true) }
         }
+    }
+
+    private func finishScan(stopped: Bool, dated: Bool) {
+        scanning = false
+        self.stopped = stopped
+        progress = ""
+        if dated { lastScan = Date() }
+        movedWhileScanning = []
+        diskChanged()
     }
 
     // MARK: Uninstaller (spec 10)
@@ -193,9 +235,13 @@ final class CleanerModel: ObservableObject {
 
     /// Picks the app to uninstall (dropped onto the Disk tab or chosen from the list), then lists its files.
     func choose(_ path: String) {
-        guard !scanning, !cleaning else { return }
+        let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        guard !scanning, !cleaning else {
+            refusal = "\(name): wait until the current \(cleaning ? "uninstall" : "listing") has finished, then try again."
+            return
+        }
         if let why = Uninstaller.refusal(path, roots: CleanerConfig.roots, selfIDs: Uninstaller.selfIDs) {
-            refusal = "\(URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent): \(why)"
+            refusal = "\(name): \(why)"
             return
         }
         refusal = nil
@@ -214,12 +260,13 @@ final class CleanerModel: ObservableObject {
         categories = []
         selected = []
         lastScan = nil
+        stopped = false
         loadChoices()
     }
 
     /// Quits the app being uninstalled and its helpers, then lists its files again.
     func quitTarget() {
-        guard let t = target, t.app.path == targetPath, !scanning else { return }
+        guard let t = target, t.app.path == targetPath, !scanning, !cleaning else { return }
         let ids = CleanerConfig.runningApps().filter { r in t.ids.contains { BundleIDs.related(r.id, $0) } }.map(\.id)
         quit(ids)
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.scan() }
@@ -233,62 +280,104 @@ final class CleanerModel: ObservableObject {
 
     private func add(_ c: Category) {
         guard scanning else { return }
+        var c = c
+        if !movedWhileScanning.isEmpty {
+            let had = !c.items.isEmpty
+            c.items.removeAll { movedWhileScanning.contains($0.path) }
+            if had && c.items.isEmpty && c.notice == nil { return }
+        }
         var list = categories.filter { $0.id != c.id } + [c]
         list.sort { (Rules.order.firstIndex(of: $0.id) ?? 99) < (Rules.order.firstIndex(of: $1.id) ?? 99) }
         categories = list
-        for i in c.items where i.preselected { selected.insert(i.id) }
+        selected.formUnion(c.items.filter(\.preselected).map(\.id))
     }
 
-    // MARK: Selection
+    /// Drops the items another list moved to the Trash while this list was scanning.
+    private func withoutMoved(_ cats: [Category]) -> [Category] {
+        guard !movedWhileScanning.isEmpty else { return cats }
+        var out = cats
+        for i in out.indices { out[i].items.removeAll { movedWhileScanning.contains($0.path) } }
+        out.removeAll { $0.items.isEmpty && $0.notice == nil }
+        return out
+    }
 
-    var allItems: [(Category, CleanItem)] { categories.flatMap { c in c.items.map { (c, $0) } } }
-    var selectedPairs: [(Category, CleanItem)] { allItems.filter { selected.contains($0.1.id) } }
-    var selectedSize: Int64 { selectedPairs.reduce(0) { $0 + $1.1.size } }
-    var reclaimable: Int64 { allItems.filter { $0.1.selectable }.reduce(0) { $0 + $1.1.size } }
+    // MARK: Selection and derived totals
+
+    private func categoriesChanged() {
+        var sums: [String: CategorySummary] = [:], sizes: [String: Int64] = [:]
+        var total: Int64 = 0
+        for c in categories {
+            sums[c.id] = Self.summarize(c)
+            for i in c.items {
+                sizes[i.id, default: 0] += i.size
+                if i.selectable { total += i.size }
+            }
+        }
+        summaries = sums
+        itemSizes = sizes
+        if reclaimable != total { reclaimable = total }
+        selectionChanged()
+    }
+
+    private func selectionChanged() {
+        let size = selected.reduce(Int64(0)) { $0 + (itemSizes[$1] ?? 0) }
+        if selectedSize != size { selectedSize = size }
+    }
+
+    private static func summarize(_ c: Category) -> CategorySummary {
+        var risks = Set<Risk>(), safe: [String] = [], trash: [String] = [], size: Int64 = 0
+        for i in c.items {
+            risks.insert(i.risk)
+            size += i.size
+            if i.preselected { safe.append(i.id) }
+            if i.selectable && i.method == .trash && i.runningOwner == nil { trash.append(i.id) }
+        }
+        let risk = risks.count == 1 ? risks.first! : risks.contains(.review) ? .review : risks.first ?? .info
+        return CategorySummary(count: c.items.count, risk: risk, checkboxIDs: safe.isEmpty ? trash : safe,
+                               trashIDs: trash, hasSafe: !safe.isEmpty, size: size)
+    }
+
+    /// The summary of a category as shown; a filtered copy (fewer items) is summarized on the spot.
+    func summary(_ c: Category) -> CategorySummary {
+        if let s = summaries[c.id], s.count == c.items.count { return s }
+        return Self.summarize(c)
+    }
+
+    var selectedPairs: [(Category, CleanItem)] {
+        categories.flatMap { c in c.items.filter { selected.contains($0.id) }.map { (c, $0) } }
+    }
 
     func toggle(_ item: CleanItem) {
         guard item.selectable else { return }
         if selected.contains(item.id) { selected.remove(item.id) } else { selected.insert(item.id) }
     }
 
-    /// What a category checkbox selects (spec 4.2): its Safe items when it has any. A category
-    /// with only Review items selects all of them, except items whose app is running.
-    func checkboxItems(_ c: Category) -> [CleanItem] {
-        let safe = c.items.filter(\.preselected)
-        return safe.isEmpty ? allTrashItems(c) : safe
-    }
-
-    /// Every item of the category that can be moved to the Trash now (context menu "Select all").
-    func allTrashItems(_ c: Category) -> [CleanItem] {
-        c.items.filter { $0.selectable && $0.method == .trash && $0.runningOwner == nil }
-    }
-
+    /// The category checkbox (spec 4.2) selects the category's Safe items when it has any. A
+    /// category with only Review items selects all of them, except items whose app is running.
     /// true: all ticked, false: none, nil: some. nil with an empty list means nothing to select.
-    func categoryState(_ c: Category) -> Bool? {
-        let items = checkboxItems(c)
-        guard !items.isEmpty else { return nil }
-        let n = items.filter { selected.contains($0.id) }.count
-        return n == items.count ? true : n == 0 ? false : nil
+    func categoryState(_ s: CategorySummary) -> Bool? {
+        guard !s.checkboxIDs.isEmpty else { return nil }
+        let n = s.checkboxIDs.reduce(0) { selected.contains($1) ? $0 + 1 : $0 }
+        return n == s.checkboxIDs.count ? true : n == 0 ? false : nil
     }
 
     func toggleCategory(_ c: Category) {
-        let items = checkboxItems(c)
-        if items.allSatisfy({ selected.contains($0.id) }) { selected.subtract(items.map(\.id)) }
-        else { selected.formUnion(items.map(\.id)) }
+        let ids = summary(c).checkboxIDs
+        if ids.allSatisfy({ selected.contains($0) }) { selected.subtract(ids) } else { selected.formUnion(ids) }
     }
 
-    func selectAll(_ c: Category) { selected.formUnion(allTrashItems(c).map(\.id)) }
+    func selectAll(_ c: Category) { selected.formUnion(summary(c).trashIDs) }
     func deselectAll(_ c: Category) { selected.subtract(c.items.map(\.id)) }
 
     // MARK: Cleaning
 
     /// Apps that must quit before some selected items can be cleaned.
     func appsToQuit() -> [(String, [String])] {
-        let running = CleanerConfig.runningApps()
+        let running = CleanerConfig.runningApps().map { ($0, EvidenceName.key($0.name)) }
         var out: [String: Set<String>] = [:]
         for (_, i) in selectedPairs {
-            for r in running where i.owners.contains(where: { BundleIDs.related(r.id, $0) })
-                || i.ownerNames.contains(where: { EvidenceName.key($0) == EvidenceName.key(r.name) }) {
+            let names = Set(i.ownerNames.map(EvidenceName.key))
+            for (r, key) in running where i.owners.contains(where: { BundleIDs.related(r.id, $0) }) || names.contains(key) {
                 out[r.name, default: []].insert(r.id)
             }
         }
@@ -298,6 +387,15 @@ final class CleanerModel: ObservableObject {
     func quit(_ ids: [String]) {
         guard !dryRun, CleanerConfig.fixtureRoot == nil, !demoMode else { return }   // never quits real apps when testing
         for a in NSWorkspace.shared.runningApplications where ids.contains(a.bundleIdentifier ?? "") { a.terminate() }
+    }
+
+    /// The confirmed clean waits until the confirmation sheet has closed, so the result sheet
+    /// that follows can always be shown (as in the Space map).
+    func confirmClean() { cleanConfirmed = true }
+    func confirmationClosed() {
+        guard cleanConfirmed else { return }
+        cleanConfirmed = false
+        clean()
     }
 
     func clean() {
@@ -321,23 +419,54 @@ final class CleanerModel: ObservableObject {
                 // The lists can show the same folder (a cache of a removed app), so all drop it.
                 for list in self.lists { list.removeMoved(done) }
                 if self.kind == .uninstall, done.contains(where: { $0 == self.targetPath }) { self.choices.removeAll { $0.id == self.targetPath } }
+                for o in result where o.status == .ran { self.previews[o.category] = nil }   // its preview is out of date
                 self.lastRunWasDry = env.dryRun
                 self.outcomes = result
                 self.cleaning = false
                 self.progress = ""
+                self.diskChanged()
             }
         }
     }
 
     private func removeMoved(_ done: Set<String>) {
-        for i in categories.indices {
-            if categories[i].method == .trash { categories[i].items.removeAll { done.contains($0.path) } }
+        guard !done.isEmpty else { return }
+        if scanning { movedWhileScanning.formUnion(done) }
+        var cats = categories, changed = false
+        for i in cats.indices where cats[i].method == .trash {
+            let n = cats[i].items.count
+            cats[i].items.removeAll { done.contains($0.path) }
+            changed = changed || cats[i].items.count != n
         }
-        categories.removeAll { $0.items.isEmpty && $0.notice == nil }
-        selected.subtract(done)
+        let n = cats.count
+        cats.removeAll { $0.items.isEmpty && $0.notice == nil }
+        if changed || cats.count != n { categories = cats }
+        if !selected.isDisjoint(with: done) { selected.subtract(done) }
     }
 
-    // MARK: Ignore list and settings (stored by the junk model, shared by both lists)
+    // MARK: Tool previews (spec 4.3)
+
+    static let checkingPreview = "Checking what it would remove…"
+
+    /// Runs each tool's read-only preview once per session, from the confirmation sheet's `.task`.
+    /// ToolRunner can't be cancelled, so a run that is going or done is never started again; a
+    /// run that finishes after the sheet closed still fills the cache.
+    func loadPreviews(_ cats: [Category]) async {
+        await withTaskGroup(of: Void.self) { g in
+            for c in cats where previews[c.id] == nil {
+                guard !Task.isCancelled, let t = c.tool, let exe = t.executable, let args = t.preview else { continue }
+                previews[c.id] = Self.checkingPreview
+                let id = c.id
+                g.addTask {
+                    let r = ToolRunner.run(exe, args, timeout: 60)
+                    let text = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    await MainActor.run { self.previews[id] = text.isEmpty ? "Nothing to remove." : String(text.suffix(3000)) }
+                }
+            }
+        }
+    }
+
+    // MARK: Ignore list and settings (stored by the junk model, shared by all three lists)
 
     func ignoreItem(_ item: CleanItem) {
         let r = root
@@ -345,9 +474,12 @@ final class CleanerModel: ObservableObject {
         r.ignore.append(item.path)
         r.defaults.set(r.ignore, forKey: "ignoredItems")
         for list in lists {
-            list.selected.remove(item.id)
-            for i in list.categories.indices { list.categories[i].items.removeAll { $0.id == item.id } }
-            list.categories.removeAll { $0.items.isEmpty && $0.notice == nil }
+            if list.selected.contains(item.id) { list.selected.remove(item.id) }
+            guard list.categories.contains(where: { $0.items.contains { $0.id == item.id } }) else { continue }
+            var cats = list.categories
+            for i in cats.indices { cats[i].items.removeAll { $0.id == item.id } }
+            cats.removeAll { $0.items.isEmpty && $0.notice == nil }
+            list.categories = cats
         }
     }
 
