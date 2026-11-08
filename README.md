@@ -14,6 +14,18 @@
 
 ![App Monitor's Disk tab: junk and developer caches with Safe and Review labels](docs/screenshot-disk.png)
 
+<details>
+<summary>Dark theme</summary>
+
+![App Monitor's Monitor tab in the dark theme](docs/screenshot-dark.png)
+
+![App Monitor's Disk tab in the dark theme](docs/screenshot-disk-dark.png)
+
+</details>
+
+The app has a light and a dark theme. It follows macOS by default; pick System, Light or Dark with the
+round button at the top right, or in Settings.
+
 <sub>The screenshots use demo mode: every process, folder and number in them is made up.</sub>
 
 ## Why
@@ -166,8 +178,8 @@ Demo mode replaces real processes with made-up ones, which is handy for screensh
 open -n "AppMonitor/App Monitor.app" --env APPMON_DEMO=1
 ```
 
-`scripts/screenshot.sh` rebuilds the app and regenerates `docs/screenshot.png` and `docs/screenshot-disk.png`
-from demo mode.
+`scripts/screenshot.sh` rebuilds the app and regenerates the light and dark screenshots in `docs/`
+from demo mode. In a debug build, `--env APPMON_APPEARANCE=light` (or `dark`) forces a theme.
 
 ## Also included
 
@@ -185,7 +197,8 @@ python3 scripts/apptop.py --detail Safari
 AppMonitor/
   main.swift        data collection: processes, memory, GPU
   ProcessTree.swift which app owns each process; pid identity checks before ending one
-  Views.swift       UI and theme
+  Theme.swift       light and dark colours, appearance setting, pill controls
+  Views.swift       Monitor tab UI and the window
   Demo.swift        demo mode and window capture
   CleanerModel.swift, CleanerViews.swift   Disk tab and Settings window
   SpaceMapModel.swift, SpaceMapViews.swift Space map view

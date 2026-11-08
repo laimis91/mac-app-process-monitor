@@ -69,7 +69,7 @@ struct TargetHeader: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(Color.white.opacity(0.03))
+        .background(Theme.hover)
     }
 }
 

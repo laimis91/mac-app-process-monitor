@@ -1,46 +1,7 @@
-// Views and theme: dark "HUD" look, heat colours, live graphs.
+// Views: panels, the process list, live graphs and the window. Colours live in Theme.swift.
 
 import SwiftUI
 import AppKit
-
-// MARK: - Theme
-
-extension Color {
-    init(hex: UInt32, _ opacity: Double = 1) {
-        self.init(.sRGB, red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255,
-                  blue: Double(hex & 0xFF) / 255, opacity: opacity)
-    }
-}
-
-enum Theme {
-    static let bg = Color(hex: 0x0D0F14)
-    static let bgTop = Color(hex: 0x141826)
-    static let panel = Color.white.opacity(0.035)
-    static let stroke = Color.white.opacity(0.08)
-    static let text = Color(hex: 0xE6EDF3)
-    static let dim = Color(hex: 0x8B949E)
-    static let faint = Color(hex: 0x5A6270)
-    static let purple = Color(hex: 0x8B6CFF)   // a nod to .NET purple
-    static let cyan = Color(hex: 0x22D3EE)
-    static let green = Color(hex: 0x3FB950)
-    static let yellow = Color(hex: 0xE3B341)
-    static let orange = Color(hex: 0xF0883E)
-    static let red = Color(hex: 0xF85149)
-    static let accent = LinearGradient(colors: [purple, cyan], startPoint: .leading, endPoint: .trailing)
-    static let mono = Font.system(.body, design: .monospaced)
-
-    /// Green → yellow → orange → red as load goes 0 → 1.
-    static func heat(_ v: Double) -> Color {
-        switch v {
-        case ..<0.25: return green
-        case ..<0.5: return yellow
-        case ..<0.8: return orange
-        default: return red
-        }
-    }
-    /// Colour for a per-process CPU value (100 = one full core).
-    static func cpuHeat(_ cpu: Double) -> Color { cpu < 5 ? dim : heat(cpu / 100) }
-}
 
 // MARK: - Formatting
 
@@ -48,6 +9,17 @@ func gb(_ bytes: Double) -> String { String(format: "%.1f GB", bytes / 1_073_741
 func ramText(_ kb: Int) -> String {
     let mb = Double(kb) / 1024
     return mb >= 1024 ? String(format: "%.2f GB", mb / 1024) : String(format: "%.0f MB", mb)
+}
+
+/// "PRESSURE NORMAL" → "Pressure normal", keeping acronyms such as CPU and GB.
+func sentenceCase(_ s: String) -> String {
+    let keep: Set<String> = ["CPU", "GPU", "RAM", "GB", "MB", "TB", "KB", "SSD", "PID"]
+    return s.split(separator: " ", omittingEmptySubsequences: false).enumerated().map { i, w in
+        let word = String(w)
+        if keep.contains(word) { return word }
+        let lower = word.lowercased()
+        return i == 0 ? lower.prefix(1).uppercased() + lower.dropFirst() : lower
+    }.joined(separator: " ")
 }
 
 enum SortKey: String, CaseIterable { case cpu = "CPU", gpu = "GPU", ram = "RAM" }
@@ -59,18 +31,22 @@ struct Panel<Content: View>: View {
     let icon: String
     @ViewBuilder let content: Content
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: icon).foregroundStyle(Theme.accent)
-                Text(title).tracking(1.5)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(sentenceCase(title))
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.dim)
+                Spacer()
+                Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(Theme.field))
+                    .overlay(Circle().strokeBorder(Theme.stroke))
+                    .accessibilityHidden(true)
             }
-            .font(.caption.weight(.bold)).foregroundStyle(Theme.dim)
             content
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.stroke))
+        .card()
     }
 }
 
@@ -81,16 +57,15 @@ struct Ring: View {
     let caption: String
     var body: some View {
         ZStack {
-            Circle().stroke(Color.white.opacity(0.07), lineWidth: 9)
+            Circle().stroke(Theme.track, lineWidth: 8)
             Circle()
                 .trim(from: 0, to: max(0.005, min(1, value)))
-                .stroke(LinearGradient(colors: [Theme.purple, color], startPoint: .top, endPoint: .bottom),
-                        style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                .stroke(color, style: StrokeStyle(lineWidth: 8, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-                .shadow(color: color.opacity(0.6), radius: 6)
-            VStack(spacing: 0) {
-                Text(label).font(.system(size: 22, weight: .bold, design: .monospaced)).foregroundStyle(Theme.text)
-                Text(caption).font(.system(size: 9, weight: .semibold)).tracking(1).foregroundStyle(Theme.dim)
+            VStack(spacing: 1) {
+                Text(label).font(.system(size: 22, weight: .semibold, design: .rounded)).foregroundStyle(Theme.text)
+                    .monospacedDigit()
+                Text(sentenceCase(caption)).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.dim)
             }
         }
         .frame(width: 96, height: 96)
@@ -113,7 +88,7 @@ struct Sparkline: View {
                     Path { p in
                         let y = g.size.height * CGFloat(i) / 4
                         p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: g.size.width, y: y))
-                    }.stroke(Color.white.opacity(0.05), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+                    }.stroke(Theme.track, style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
                 }
                 if pts.count > 1 {
                     Path { p in
@@ -121,10 +96,9 @@ struct Sparkline: View {
                         pts.forEach { p.addLine(to: $0) }
                         p.addLine(to: CGPoint(x: pts.last!.x, y: g.size.height))
                     }
-                    .fill(LinearGradient(colors: [color.opacity(0.35), color.opacity(0)], startPoint: .top, endPoint: .bottom))
+                    .fill(LinearGradient(colors: [color.opacity(0.22), color.opacity(0)], startPoint: .top, endPoint: .bottom))
                     Path { p in p.addLines(pts) }
-                        .stroke(color, style: StrokeStyle(lineWidth: 1.6, lineJoin: .round))
-                        .shadow(color: color.opacity(0.7), radius: 3)
+                        .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
             }
         }
@@ -136,13 +110,12 @@ struct Chip: View {
     let color: Color
     var body: some View {
         HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 7, height: 7).shadow(color: color, radius: 3)
-            Text(text).font(.caption.weight(.bold)).tracking(0.8)
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(sentenceCase(text)).font(.system(size: 11, weight: .semibold))
         }
         .foregroundStyle(color)
         .padding(.horizontal, 9).padding(.vertical, 4)
-        .background(Capsule().fill(color.opacity(0.12)))
-        .overlay(Capsule().strokeBorder(color.opacity(0.35)))
+        .background(Capsule().fill(color.opacity(0.13)))
     }
 }
 
@@ -152,9 +125,8 @@ struct HeatBar: View {
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.06))
-                Capsule()
-                    .fill(LinearGradient(colors: [color.opacity(0.55), color], startPoint: .leading, endPoint: .trailing))
+                Capsule().fill(Theme.track)
+                Capsule().fill(color)
                     .frame(width: max(fraction > 0.002 ? 3 : 0, g.size.width * min(1, fraction)))
             }
         }
@@ -174,7 +146,7 @@ struct CPUPanel: View {
                 Ring(value: pct / 100, color: color, label: String(format: "%.0f%%", pct), caption: "LOAD")
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(String(format: "%.1f", busy)).font(.system(size: 20, weight: .bold, design: .monospaced))
+                        Text(String(format: "%.1f", busy)).font(.system(size: 28, weight: .regular, design: .rounded)).monospacedDigit()
                             .foregroundStyle(Theme.text)
                         Text("/ \(s.cores) cores busy").font(.callout).foregroundStyle(Theme.dim)
                     }
@@ -200,9 +172,9 @@ struct MemoryPanel: View {
         let parts: [(String, Double, Color, String)] = [
             ("Apps", m.app, Theme.purple, "Memory your apps are using."),
             ("System", m.wired, Theme.orange, "Wired: used by macOS itself, can't be freed."),
-            ("Compressed", m.compressed, Color(hex: 0xDB61A2), "App memory squeezed to save space. A lot of it means RAM is getting tight."),
+            ("Compressed", m.compressed, Theme.pink, "App memory squeezed to save space. A lot of it means RAM is getting tight."),
             ("Cache", m.cached, Theme.cyan.opacity(0.75), "Recently used files kept in RAM. Freed instantly when an app needs it, so it counts as available."),
-            ("Free", m.free, Color.white.opacity(0.18), "Completely unused."),
+            ("Free", m.free, Theme.free, "Completely unused."),
         ]
         let (pName, pColor): (String, Color) = m.pressure >= 4 ? ("CRITICAL", Theme.red)
             : m.pressure >= 2 ? ("WARNING", Theme.orange) : ("NORMAL", Theme.green)
@@ -212,7 +184,7 @@ struct MemoryPanel: View {
                      caption: "GB AVAILABLE")
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(gb(m.available)).font(.system(size: 20, weight: .bold, design: .monospaced)).foregroundStyle(Theme.text)
+                        Text(gb(m.available)).font(.system(size: 28, weight: .regular, design: .rounded)).monospacedDigit().foregroundStyle(Theme.text)
                         Text("available of \(gb(m.total))").font(.callout).foregroundStyle(Theme.dim)
                         Spacer()
                         Chip(text: "PRESSURE \(pName)", color: pColor)
@@ -221,7 +193,7 @@ struct MemoryPanel: View {
                     GeometryReader { g in
                         HStack(spacing: 2) {
                             ForEach(parts, id: \.0) { p in
-                                RoundedRectangle(cornerRadius: 3).fill(p.2)
+                                Capsule().fill(p.2)
                                     .frame(width: max(0, g.size.width * p.1 / max(1, m.total) - 2))
                                     .help("\(p.0): \(gb(p.1))\n\(p.3)")
                             }
@@ -231,7 +203,7 @@ struct MemoryPanel: View {
                         GridRow { legend(parts[0]); legend(parts[1]); legend(parts[2]) }
                         GridRow {
                             legend(parts[3]); legend(parts[4])
-                            legend(("Swap", m.swapUsed, m.swapUsed > 1_073_741_824 ? Theme.orange : Color.white.opacity(0.35),
+                            legend(("Swap", m.swapUsed, m.swapUsed > 1_073_741_824 ? Theme.orange : Theme.free,
                                     "Memory moved to disk because RAM was full. Some is normal; a lot that keeps growing means you're short on RAM."))
                         }
                     }.font(.caption)
@@ -266,7 +238,7 @@ struct GPUPanel: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text(gb(g.memoryUsed).replacingOccurrences(of: " GB", with: ""))
-                            .font(.system(size: 20, weight: .bold, design: .monospaced)).foregroundStyle(Theme.text)
+                            .font(.system(size: 28, weight: .regular, design: .rounded)).monospacedDigit().foregroundStyle(Theme.text)
                         Text("GB in use").font(.callout).foregroundStyle(Theme.dim)
                     }
                     .help("Memory the GPU is using right now. On Apple Silicon this comes out of the same RAM as everything else.")
@@ -338,19 +310,18 @@ struct ContentView: View {
                 MemoryPanel()
             }
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 18)
 
-            toolbar.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
+            toolbar.padding(.horizontal, 18).padding(.top, 16).padding(.bottom, 10)
 
             VStack(spacing: 0) {
                 columnHeader
                 Rectangle().fill(Theme.stroke).frame(height: 1)
                 ScrollView { LazyVStack(spacing: 0) { rowList } }
             }
-            .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.stroke))
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .padding(.horizontal, 14)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .card()
+            .padding(.horizontal, 18)
 
             Text("CPU 100% = one fully busy core  ·  RAM is summed per process, so shared memory can be counted more than once")
                 .font(.caption2).foregroundStyle(Theme.faint)
@@ -369,14 +340,13 @@ struct ContentView: View {
                         .buttonStyle(.plain).foregroundStyle(Theme.dim)
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.stroke))
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(Capsule().fill(Theme.field))
+            .overlay(Capsule().strokeBorder(Theme.stroke))
             .frame(maxWidth: 300)
 
-            Picker("", selection: $sort) {
-                ForEach(SortKey.allCases, id: \.self) { Text("Sort: \($0.rawValue)") }
-            }.pickerStyle(.segmented).labelsHidden().frame(width: 260)
+            PillPicker(title: "Sort", selection: $sort, items: SortKey.allCases) { "Sort: \($0.rawValue)" }
+                .frame(width: 260)
 
             Toggle("Hide idle", isOn: $hideIdle).toggleStyle(.switch).controlSize(.small)
                 .foregroundStyle(Theme.dim)
@@ -391,16 +361,16 @@ struct ContentView: View {
 
     var columnHeader: some View {
         HStack(spacing: 0) {
-            Text("APP / PROCESS").padding(.leading, 44)
+            Text("App / process").padding(.leading, 44)
             Spacer()
             Text("CPU").frame(width: 200, alignment: .leading)
             Text("GPU").frame(width: 120, alignment: .leading)
             Text("RAM").frame(width: 150, alignment: .leading)
-            Text("PROCS").frame(width: 56, alignment: .trailing)
+            Text("Procs").frame(width: 56, alignment: .trailing)
             Color.clear.frame(width: 40, height: 1)
         }
-        .font(.caption2.weight(.bold)).tracking(1.2).foregroundStyle(Theme.faint)
-        .padding(.vertical, 8)
+        .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.faint)
+        .padding(.vertical, 10)
     }
 
     @ViewBuilder var rowList: some View {
@@ -411,7 +381,7 @@ struct ContentView: View {
                     if expanded.contains(r.node.id) { expanded.remove(r.node.id) } else { expanded.insert(r.node.id) }
                 }
             }
-            if r.depth == 0 { Rectangle().fill(Color.white.opacity(0.04)).frame(height: 1) }
+            if r.depth == 0 { Rectangle().fill(Theme.stroke).frame(height: 1).padding(.horizontal, 12) }
         }
     }
 
@@ -434,9 +404,9 @@ struct ToolButton: View {
         Button(action: action) {
             HStack(spacing: 5) { Image(systemName: icon); Text(text) }
                 .font(.callout.weight(.medium))
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(hover ? 0.12 : 0.06)))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.stroke))
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(Capsule().fill(hover ? Theme.hover : Theme.field))
+                .overlay(Capsule().strokeBorder(Theme.stroke))
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
@@ -460,11 +430,12 @@ struct RowView: View {
 
     var body: some View {
         let heat = Theme.cpuHeat(node.cpu)
+        let idle = node.cpu < 5   // cpuHeat shows these as dim
         HStack(spacing: 8) {
             // tree guides
             HStack(spacing: 0) {
                 ForEach(0..<depth, id: \.self) { _ in
-                    Rectangle().fill(Color.white.opacity(0.07)).frame(width: 1).padding(.leading, 7).padding(.trailing, 8)
+                    Rectangle().fill(Theme.track).frame(width: 1).padding(.leading, 7).padding(.trailing, 8)
                 }
             }
             Group {
@@ -490,10 +461,10 @@ struct RowView: View {
             }
             Spacer(minLength: 8)
             HStack(spacing: 8) {
-                HeatBar(fraction: node.cpu / maxCPU, color: heat == Theme.dim ? Theme.purple : heat).frame(width: 80, height: 6)
+                HeatBar(fraction: node.cpu / maxCPU, color: idle ? Theme.purple : heat).frame(width: 80, height: 6)
                 VStack(alignment: .trailing, spacing: 0) {
                     Text(String(format: "%.1f%%", node.cpu)).font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(heat == Theme.dim ? Theme.text.opacity(0.7) : heat)
+                        .foregroundStyle(idle ? Theme.text.opacity(0.7) : heat)
                     if node.isGroup && node.cpu >= 10 {
                         Text(String(format: "%.1f cores", node.cpu / 100)).font(.system(size: 9, design: .monospaced))
                             .foregroundStyle(Theme.dim)
@@ -528,7 +499,7 @@ struct RowView: View {
         .padding(.leading, 12).padding(.vertical, node.isGroup ? 7 : 4)
         .background(
             ZStack(alignment: .leading) {
-                Rectangle().fill(hover ? Theme.purple.opacity(0.10) : isExpanded && node.isGroup ? Color.white.opacity(0.03) : .clear)
+                Rectangle().fill(hover ? Theme.purple.opacity(0.08) : isExpanded && node.isGroup ? Theme.hover : .clear)
                 if node.isGroup && node.cpu >= 30 {   // hot-app marker on the left edge
                     Rectangle().fill(heat).frame(width: 3)
                 }
@@ -637,12 +608,17 @@ struct RowView: View {
 
 // MARK: - Window
 
-enum Tab: String, CaseIterable { case monitor = "Monitor", disk = "Disk" }
+enum Tab: String, CaseIterable {
+    case monitor = "Monitor", disk = "Disk"
+    var icon: String { self == .monitor ? "waveform.path.ecg" : "internaldrive" }
+    var heading: String { self == .monitor ? "System Activity" : "Disk Cleanup" }
+}
 
 struct RootView: View {
     @EnvironmentObject var s: Sampler
     @EnvironmentObject var cleaner: CleanerModel
     @State private var tab: Tab = RootView.firstTab
+    @AppStorage(AppearanceMode.key) private var appearance: AppearanceMode = .system
 
     /// APPMON_TAB=disk opens the Disk tab (debug builds only).
     static var firstTab: Tab {
@@ -655,6 +631,7 @@ struct RootView: View {
     var body: some View {
         VStack(spacing: 0) {
             titleBar
+            heading
             // Both tabs stay alive, so each keeps its own state (spec 4.1).
             ZStack {
                 ContentView(expanded: demoMode ? Demo.expanded : [])
@@ -664,30 +641,42 @@ struct RootView: View {
             }
         }
         .foregroundStyle(Theme.text)
-        .background(LinearGradient(colors: [Theme.bgTop, Theme.bg], startPoint: .top, endPoint: .center).ignoresSafeArea())
+        .background(PageBackground())
         .ignoresSafeArea(.container, edges: .top)   // draw into the hidden title bar strip
-        .preferredColorScheme(.dark)
         .tint(Theme.purple)
-        .onAppear { if tab == .disk { cleaner.activate() } }
+        .onAppear {
+            if tab == .disk { cleaner.activate() }
+        }
+        .onChange(of: appearance) { _, m in m.apply() }
         .onChange(of: tab) { _, t in if t == .disk { cleaner.activate() } }
     }
 
+    /// Large page title, as in the reference design.
+    var heading: some View {
+        Text(tab.heading)
+            .font(.system(size: 26, weight: .regular))
+            .foregroundStyle(Theme.text)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 14)
+            .accessibilityAddTraits(.isHeader)
+    }
+
     var titleBar: some View {
-        HStack(spacing: 10) {
-            Image(nsImage: NSApp?.applicationIconImage ?? NSImage()).resizable().frame(width: 18, height: 18)
-            Text("App Monitor").font(.headline)
-            Chip(text: s.paused ? "PAUSED" : "LIVE", color: s.paused ? Theme.yellow : Theme.green)
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue) }
+        ZStack {
+            HStack(spacing: 10) {
+                Image(nsImage: NSApp?.applicationIconImage ?? NSImage()).resizable().frame(width: 20, height: 20)
+                Text("App Monitor").font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Chip(text: s.paused ? "PAUSED" : "LIVE", color: s.paused ? Theme.yellow : Theme.green)
+                AppearanceButton()
             }
-            .pickerStyle(.segmented).labelsHidden().frame(width: 160)
-            .padding(.leading, 8)
-            Spacer()
+            PillPicker(title: "Tab", selection: $tab, items: Tab.allCases, icon: { $0.icon }) { $0.rawValue }
+                .frame(width: 220)
         }
         .padding(.leading, 76)   // sits right of the window buttons
-        .padding(.trailing, 14)
-        .frame(height: 28)                    // same height as the title bar, so it lines up with the buttons
-        .padding(.top, 3).padding(.bottom, 5)  // nudged to the window buttons' centre line
+        .padding(.trailing, 18)
+        .frame(height: 34)
+        .padding(.top, 6).padding(.bottom, 4)
     }
 }
 
@@ -703,6 +692,11 @@ struct AppMonitorApp: App {
         #if APPMON_DEBUG
         Headless.runIfRequested()
         #endif
+        // Before any window is shown, so a saved Light or Dark choice doesn't flash the system look.
+        NotificationCenter.default.addObserver(forName: NSApplication.willFinishLaunchingNotification,
+                                               object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { AppearanceMode.initial.apply() }
+        }
     }
 
     var body: some Scene {
@@ -719,10 +713,10 @@ struct AppMonitorApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1340, height: 820)
+        .defaultSize(width: 1340, height: 860)
 
         Settings {
-            SettingsView().environmentObject(cleaner).preferredColorScheme(.dark)
+            SettingsView().environmentObject(cleaner)
         }
     }
 }

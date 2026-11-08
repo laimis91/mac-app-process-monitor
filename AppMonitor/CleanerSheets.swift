@@ -45,7 +45,7 @@ struct ConfirmSheet: View {
                                     .frame(maxHeight: 90)
                             }
                         }
-                        .padding(8).background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
+                        .padding(8).background(RoundedRectangle(cornerRadius: 6).fill(Theme.hover))
                     }
                 }
             }

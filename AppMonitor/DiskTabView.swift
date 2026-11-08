@@ -23,18 +23,16 @@ struct CleanerView: View {
                 AccessPanel()
             }
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 18)
 
-            if m.fda != .granted && !m.bannerHidden { FDABanner().padding(.horizontal, 14).padding(.top, 12) }
+            if m.fda != .granted && !m.bannerHidden { FDABanner().padding(.horizontal, 18).padding(.top, 14) }
 
             HStack(spacing: 12) {
-                Picker("Disk view", selection: $m.view) {
-                    ForEach(DiskView.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 360)
+                PillPicker(title: "Disk view", selection: $m.view, items: DiskView.allCases) { $0.rawValue }
+                    .frame(width: 380)
                 if m.view == .spaceMap { SpaceToolbar() } else { ResultsToolbar().environmentObject(list) }
             }
-            .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
+            .padding(.horizontal, 18).padding(.top, 16).padding(.bottom, 10)
 
             VStack(spacing: 0) {
                 switch m.view {
@@ -44,10 +42,9 @@ struct CleanerView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.stroke))
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .padding(.horizontal, 14)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .card()
+            .padding(.horizontal, 18)
 
             Text(m.view.footer + (m.dryRun ? "  ·  DRY RUN: nothing is changed" : ""))
                 .font(.caption2).foregroundStyle(m.dryRun ? Theme.yellow : Theme.faint)
@@ -129,18 +126,8 @@ struct ResultsToolbar: View {
             SearchField(prompt: "Filter results", text: $m.search)
             if m.kind != .uninstall || m.target != nil {
                 Text("Selected: \(byteText(m.selectedSize))").font(.callout.monospaced()).foregroundStyle(Theme.text)
-                Button {
-                    m.confirming = true
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "trash")
-                        Text(m.kind.cleanButton)
-                    }
-                    .font(.callout.weight(.semibold))
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(m.selected.isEmpty ? Color.white.opacity(0.06) : Theme.purple.opacity(0.8)))
-                }
-                .buttonStyle(.plain)
+                PrimaryButton(icon: "trash", text: m.kind.cleanButton,
+                              enabled: !(m.selected.isEmpty || m.scanning || m.cleaning)) { m.confirming = true }
                 .disabled(m.selected.isEmpty || m.scanning || m.cleaning)
             }
         }

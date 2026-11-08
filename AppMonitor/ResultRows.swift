@@ -101,14 +101,14 @@ struct ResultsList: View {
                     .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 4)
                 } else {
                     HStack {
-                        Text(g.rawValue.uppercased()).font(.caption2.weight(.bold)).tracking(1.2).foregroundStyle(Theme.faint)
+                        Text(g.rawValue.capitalized).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.dim)
                         Spacer()
                     }
                     .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 4)
                 }
             case .category(let c, let open):
                 VStack(spacing: 0) {
-                    Rectangle().fill(Color.white.opacity(0.04)).frame(height: 1)
+                    Rectangle().fill(Theme.stroke).frame(height: 1)
                     CategoryRow(category: c, isExpanded: open) {
                         if m.expanded.contains(c.id) { m.expanded.remove(c.id) } else { m.expanded.insert(c.id) }
                     }
@@ -262,7 +262,7 @@ struct ItemRow: View {
                 .foregroundStyle(Theme.text.opacity(0.85)).frame(width: 90, alignment: .trailing)
         }
         .padding(.horizontal, 14).padding(.vertical, 6)
-        .background(hover ? Color.white.opacity(0.03) : .clear)
+        .background(hover ? Theme.hover : .clear)
         .onHover { hover = $0 }
         .contextMenu {
             if let shown = shownPath {

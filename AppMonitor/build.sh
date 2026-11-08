@@ -21,7 +21,7 @@ fi
 APP="${APPMON_OUT:-App Monitor.app}"   # APPMON_OUT: build somewhere else (fixture tests)
 # The build starts with rm -rf "$APP": refuse anything that isn't an app bundle path.
 [[ "$APP" == *?.app ]] || { echo "APPMON_OUT must end in .app, got: $APP" >&2; exit 1; }
-SOURCES=(main.swift Views.swift Demo.swift CleanerModel.swift CleanerViews.swift
+SOURCES=(main.swift Theme.swift Views.swift Demo.swift CleanerModel.swift CleanerViews.swift
          DiskTabView.swift ResultRows.swift UninstallerViews.swift DiskPanels.swift CleanerSheets.swift SettingsView.swift
          Cleaner/Model.swift Cleaner/PathGuard.swift Cleaner/Keys.swift Cleaner/ScanEngine.swift
          Cleaner/InstalledApps.swift Cleaner/Rules.swift Cleaner/Actions.swift Cleaner/Probes.swift

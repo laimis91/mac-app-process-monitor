@@ -98,7 +98,7 @@ struct SpaceMapView: View {
                 empty
             } else {
                 header
-                Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
+                Rectangle().fill(Theme.stroke).frame(height: 1)
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(rows) { r in
@@ -294,7 +294,7 @@ struct SpaceConfirmSheet: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.05)))
+            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.hover))
             Text("It goes to the Trash, so you can put it back. It is checked again first: it is skipped if it changed since the scan, or if an app has a file inside it open.")
                 .font(.callout).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
             if s.dryRun { Text("Dry run: nothing will be changed.").foregroundStyle(Theme.yellow) }
