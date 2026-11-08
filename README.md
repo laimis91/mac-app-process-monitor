@@ -5,13 +5,16 @@
 <h1 align="center">App Monitor</h1>
 
 <p align="center">
-  A clear, free process monitor for macOS that shows what each app <i>really</i> costs,
-  including every process it started.
+  A clear, free process monitor and disk cleaner for macOS. It shows what each app <i>really</i>
+  costs, including every process it started, and finds caches, leftovers and junk you can safely
+  remove.
 </p>
 
-![App Monitor screenshot](docs/screenshot.png)
+![App Monitor's Monitor tab: per-app CPU, GPU and RAM with a process tree](docs/screenshot.png)
 
-<sub>The screenshot uses demo mode: every process, folder and number in it is made up.</sub>
+![App Monitor's Disk tab: junk and developer caches with Safe and Review labels](docs/screenshot-disk.png)
+
+<sub>The screenshots use demo mode: every process, folder and number in them is made up.</sub>
 
 ## Why
 
@@ -146,9 +149,14 @@ You can change this in **System Settings → Privacy & Security → Automation**
 The disk cleaner works without it, but skips folders macOS protects (app containers, Mail, the
 Trash) and marks them "Needs Full Disk Access". To include them, switch App Monitor on in
 **System Settings → Privacy & Security → Full Disk Access**. Releases after 1.1.0 are all signed
-with the same certificate, so macOS should keep this permission when you update. Updating from
-1.1.0 or earlier (ad-hoc signed), or running an ad-hoc build of your own: switch App Monitor off
-and on again after each update.
+with the same certificate, so macOS should keep this permission when you update.
+
+If App Monitor is switched on there but the Disk tab still says Full Disk Access is off, macOS
+is holding a permission for an older signature of the app. Switching it off and on doesn't
+replace that. Select App Monitor in the list, remove it with the **−** button, add it again
+with **+** (from Applications), then quit and reopen App Monitor. This is needed once when
+updating from 1.1.0 or earlier (ad-hoc signed), and after every rebuild if you run ad-hoc builds
+of your own.
 
 ## Demo mode and screenshots
 
@@ -158,7 +166,8 @@ Demo mode replaces real processes with made-up ones, which is handy for screensh
 open -n "AppMonitor/App Monitor.app" --env APPMON_DEMO=1
 ```
 
-`scripts/screenshot.sh` rebuilds the app and regenerates `docs/screenshot.png` from demo mode.
+`scripts/screenshot.sh` rebuilds the app and regenerates `docs/screenshot.png` and `docs/screenshot-disk.png`
+from demo mode.
 
 ## Also included
 
@@ -186,7 +195,7 @@ AppMonitor/
   AppMonitor.entitlements  its only entitlement: Apple events to Finder (hardened runtime)
 scripts/            apptop.py, screenshot.sh, selftest.sh, grouping-test.sh, fixture-test.sh,
                     make-fixtures.sh (the fake folder trees fixture-test.sh uses), make-signing-cert.sh
-docs/               README screenshot, disk cleaner specification
+docs/               README screenshots, disk cleaner specification
 ```
 
 ## Tests
@@ -208,11 +217,11 @@ build provenance attestation. If the tag isn't on `main` or the signing secrets 
 fails before building and publishes nothing.
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.3
+git push origin v1.2.3
 ```
 
-Local builds use version 1.2.2 unless `APPMON_VERSION` is set.
+Local builds use version 1.2.3 unless `APPMON_VERSION` is set.
 
 ## Signing
 

@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # APPMON_VERSION sets the app version (the release workflow passes the tag, without the "v").
-VERSION="${APPMON_VERSION:-1.2.2}"
+VERSION="${APPMON_VERSION:-1.2.3}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "APPMON_VERSION must look like 1.2.3" >&2; exit 1; }
 # APPMON_RELEASE=1 (set by the release workflow) refuses to build without a signing identity.
 if [ "${APPMON_RELEASE:-}" = "1" ] && [ -z "${APPMON_SIGN_IDENTITY:-}" ]; then

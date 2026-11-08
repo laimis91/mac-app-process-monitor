@@ -93,7 +93,7 @@ struct FDABanner: View {
             Image(systemName: "exclamationmark.shield.fill").foregroundStyle(Theme.yellow).font(.title3).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text("Full Disk Access is off.").font(.callout.weight(.semibold))
-                Text("App Monitor can't look inside some folders, such as app containers and Mail. Those parts are skipped. In System Settings, switch App Monitor on (or add it with the + button). If you just updated App Monitor, switch it off and on again.")
+                Text("App Monitor can't look inside some folders, such as app containers and Mail. Those parts are skipped. In System Settings, switch App Monitor on, or add it with the + button. If it's already on, select it, remove it with the − button, add it again with +, then quit and reopen App Monitor.")
                     .font(.callout).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
