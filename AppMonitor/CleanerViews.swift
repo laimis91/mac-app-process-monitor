@@ -107,9 +107,9 @@ struct SearchField: View {
             Image(systemName: "magnifyingglass").foregroundStyle(Theme.dim).accessibilityHidden(true)
             TextField(prompt, text: $text).textFieldStyle(.plain)
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.stroke))
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(Capsule().fill(Theme.field))
+        .overlay(Capsule().strokeBorder(Theme.stroke))
         .frame(maxWidth: 240)
     }
 }

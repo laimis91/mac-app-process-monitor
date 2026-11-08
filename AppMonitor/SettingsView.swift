@@ -6,11 +6,18 @@ struct SettingsView: View {
     @EnvironmentObject var m: CleanerModel
     @State private var drafts: [AgeField: String] = [:]
     @State private var errors: [AgeField: String] = [:]
+    @AppStorage(AppearanceMode.key) private var appearance: AppearanceMode = .system
 
     let fields: [AgeField] = [.logs, .temp, .leftovers, .lowConfidence, .mail]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Text("Appearance").font(.headline)
+            Picker("Appearance", selection: $appearance) {
+                ForEach(AppearanceMode.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+            Divider()
             Text("Age limits").font(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 ForEach(fields, id: \.self) { f in

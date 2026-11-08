@@ -15,7 +15,7 @@ struct DiskPanel: View {
             HStack(spacing: 16) {
                 Ring(value: used, color: Theme.heat(used * 0.9), label: String(format: "%.0f", free / 1e9), caption: "GB FREE")
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(String(format: "%.0f GB", total / 1e9)).font(.system(size: 20, weight: .bold, design: .monospaced))
+                    Text(String(format: "%.0f GB", total / 1e9)).font(.system(size: 28, weight: .regular, design: .rounded)).monospacedDigit()
                     Text("Startup disk").font(.callout).foregroundStyle(Theme.dim)
                     Text(String(format: "%.0f%% used", used * 100)).font(.caption).foregroundStyle(Theme.dim)
                 }
@@ -39,7 +39,7 @@ struct ReclaimPanel: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text("up to").font(.callout).foregroundStyle(Theme.dim)
-                    Text(byteText(m.reclaimable)).font(.system(size: 20, weight: .bold, design: .monospaced))
+                    Text(byteText(m.reclaimable)).font(.system(size: 28, weight: .regular, design: .rounded)).monospacedDigit()
                 }
                 Text("\(byteText(m.selectedSize)) selected in \(m.selected.count) item\(m.selected.count == 1 ? "" : "s")")
                     .font(.callout).foregroundStyle(Theme.dim)
@@ -100,8 +100,8 @@ struct FDABanner: View {
             ToolButton(icon: "gearshape", text: "Open System Settings") { m.openFDASettings() }
             ToolButton(icon: "xmark", text: "Not now") { m.bannerHidden = true }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.yellow.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.yellow.opacity(0.35)))
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Theme.yellow.opacity(0.10)))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Theme.yellow.opacity(0.30)))
     }
 }
