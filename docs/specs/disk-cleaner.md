@@ -115,6 +115,15 @@ builds without a signing identity) **every update loses the grant**. Phase 5 (se
 releases with one self-signed certificate, so the requirement names the bundle ID and that
 certificate and stays the same across builds. Phase 3 depends on it to be truly useful.
 
+Because the app holds FDA, every build (signed or ad-hoc) MUST use the hardened runtime
+(`codesign --options runtime`), so no other process running as the user can load code into it
+(for example with `DYLD_INSERT_LIBRARIES` through `open --env` or a launch agent) and read
+protected files with its grant. Its only entitlement is
+`com.apple.security.automation.apple-events` (`AppMonitor/AppMonitor.entitlements`), for the
+Finder Apple events that move items to the Trash with Put Back (decision D8). It MUST NOT have
+`com.apple.security.cs.disable-library-validation` or
+`com.apple.security.cs.allow-dyld-environment-variables`.
+
 Until the section 11 acceptance test passes, and while ad-hoc builds are around, the FDA banner
 SHOULD keep: "If you just updated App Monitor, switch it off and on again in Full Disk Access."
 Updating from an ad-hoc build to the first signed one always needs this once, because the
@@ -864,24 +873,39 @@ update.
 **Plan (decision D1):**
 
 1. Create a self-signed code-signing certificate, "App Monitor Signing", in the maintainer's
-   keychain. It is never committed to the repo. *Done by* `scripts/make-signing-cert.sh`: it
+   keychain. It is never committed to the repo (`.gitignore` also excludes `.p12`, `.pem`,
+   `.key`, `.cer` and keychain files). *Done by* `scripts/make-signing-cert.sh`: it
    makes an RSA-2048 certificate (10 years, extended key usage `codeSigning`) in a private
    temporary folder, imports the key and certificate into the keychain with `codesign` access,
-   and optionally exports a password-protected `.p12` (outside the repo) for CI.
+   and optionally exports a password-protected `.p12` for CI, never inside a git checkout or
+   under `~/Desktop`, `~/Documents`, `~/Library/Mobile Documents` or `~/Library/CloudStorage`.
+   The recommended keychain is a dedicated one (`--keychain`, or `APPMON_SIGN_KEYCHAIN`), which
+   the script creates if needed and sets to lock on sleep and after 5 minutes
+   (`security set-keychain-settings -l -u -t 300`): with `codesign` access, a key in the
+   always-unlocked login keychain lets any same-user process sign as App Monitor without a
+   prompt. README, Signing, describes moving an existing certificate out of the login keychain.
 2. `build.sh` signs with that identity when `APPMON_SIGN_IDENTITY` is set, and falls back to
    ad-hoc (`codesign -s -`) otherwise, so contributors can still build. A release build
    (`APPMON_RELEASE=1`, used by the release workflow) fails if `APPMON_SIGN_IDENTITY` isn't set.
    *Done.* A signed build also fails unless `codesign -d -r-` shows
    `identifier "io.github.laimis91.appmonitor"` and a certificate, with no cdhash.
-   `APPMON_SIGN_KEYCHAIN` limits the identity search to one keychain.
-3. CI signing. *Done.* The release workflow reads the `.p12` (base64) and its password from the
-   repository secrets `APPMON_SIGN_P12` and `APPMON_SIGN_P12_PASSWORD`, imports them into a
+   `APPMON_SIGN_KEYCHAIN` limits the identity search to one keychain. Both kinds of build are
+   signed with `--options runtime --entitlements AppMonitor.entitlements` (section 3.2), and
+   fail unless `codesign -dv` shows the `runtime` flag and the Apple events entitlement is
+   present. `APPMON_OUT` must end in `.app`, because the build starts by deleting it.
+3. CI signing. *Done.* The release workflow runs in the GitHub environment `release` and reads
+   the `.p12` (base64) and its password from its secrets `APPMON_SIGN_P12` and
+   `APPMON_SIGN_P12_PASSWORD`, imports them into a
    temporary keychain with a random password, builds with `APPMON_RELEASE=1`, checks the
-   requirement, and deletes the keychain in an `always()` step. If either secret is missing the
-   workflow fails before building, so it never publishes an ad-hoc build.
+   requirement, the hardened runtime flag and the entitlement, and deletes the keychain in an
+   `always()` step. If either secret is missing the workflow fails before building, so it never
+   publishes an ad-hoc build. It also fails unless the tagged commit is an ancestor of
+   `origin/main`. The release notes give the zip's SHA-256, and the zip gets a build provenance
+   attestation (`gh attestation verify`). Restricting the secrets to the environment and tag
+   creation to the maintainer (tag ruleset) are repository settings, listed in README, Signing.
 4. Run the acceptance test below on macOS 14 and 15. *Pending:* it needs a person to grant FDA.
 5. If Full Disk Access does not survive an update, switch to an Apple Developer ID
-   (`--options runtime --timestamp` plus notarization) before phase 3 ships.
+   (`--timestamp` plus notarization; the hardened runtime is already on) before phase 3 ships.
 
 Note: release builds must always be signed with the same certificate. Users who build from
 source sign with their own identity, or ad-hoc. Gatekeeper still rejects a self-signed build
@@ -997,7 +1021,13 @@ Decided by the project owner.
 - To be tested before relying on them:
   - Put Back for Finder-moved items on macOS 14 and 15 (verified on macOS 27 only),
   - whether an FDA check adds the app to the Settings list,
-  - how macOS 14+ reacts to reading other apps' containers without FDA.
+  - how macOS 14+ reacts to reading other apps' containers without FDA,
+  - Finder Apple events under the hardened runtime on macOS 14 and 15 (verified on macOS 27
+    only: a hardened debug build's `--clean-json` act moved fixture items with Put Back).
+- The dedicated signing keychain protects the key only while it is locked: while unlocked (until
+  5 minutes pass without use, or the Mac sleeps), any same-user process can still sign with it. The
+  release workflow's secrets protect CI only once they are moved into the `release` environment
+  and a tag ruleset limits who can push release tags (maintainer settings, README, Signing).
 - Not verified:
   - whether a self-signed certificate keeps FDA across builds. The designated requirement is
     verified to stay the same (section 11); the FDA grant itself needs the manual test there,
