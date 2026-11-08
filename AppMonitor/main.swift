@@ -14,6 +14,7 @@ func runPS(_ format: String) -> String {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/bin/ps")
     p.arguments = ["-axww", "-o", format]
+    p.environment = ["LC_ALL": "C", "PATH": "/usr/bin:/bin"]   // fixed lstart format, whatever the user's locale
     let pipe = Pipe()
     p.standardOutput = pipe
     p.standardError = FileHandle.nullDevice

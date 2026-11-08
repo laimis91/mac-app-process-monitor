@@ -93,7 +93,7 @@ check(id?.ppid == getpid(), "identity: child's parent is this test")
 check(stillSameProcess(cpid, id), "identity: unchanged child matches")
 if let id {
     check(!stillSameProcess(cpid, ProcIdentity(ppid: id.ppid, startSec: id.startSec, startUsec: id.startUsec + 1)), "identity: other start time refused")
-    check(!stillSameProcess(cpid, ProcIdentity(ppid: id.ppid + 1, startSec: id.startSec, startUsec: id.startUsec)), "identity: other parent refused")
+    check(stillSameProcess(cpid, ProcIdentity(ppid: 1, startSec: id.startSec, startUsec: id.startUsec)), "identity: reparented to launchd is still the same process")
 }
 check(!stillSameProcess(cpid, nil), "identity: no sampled identity refused")
 check(executablePath(cpid) == "/bin/sleep", "executablePath of the child")

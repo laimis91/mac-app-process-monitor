@@ -46,6 +46,7 @@ struct Outcome: Codable {
 /// How one item ended up after a move to the Trash.
 enum TrashResult: Equatable {
     case moved(putBack: Bool)        // putBack: Finder moved it, so Finder's Put Back works
+    case movedDespiteError           // Finder reported an error, but the same file is now in the Trash
     case failed(String)              // this item failed; others in the batch may still work
     case failedAll(String)           // the move failed as a whole (Finder hung, quit, cancelled): don't retry
 }
@@ -119,6 +120,9 @@ enum Cleaner {
                 case .moved(let putBack):
                     out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .moved,
                                        reason: putBack ? nil : "Moved without Put Back", size: item.size))
+                case .movedDespiteError:
+                    out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .moved,
+                                       reason: "Finder reported an error but moved it; Put Back may not work", size: item.size))
                 case .failed(let why), .failedAll(let why):
                     out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .failed, reason: why))
                 }

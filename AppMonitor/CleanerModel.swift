@@ -269,7 +269,10 @@ final class CleanerModel: ObservableObject {
         guard let t = target, t.app.path == targetPath, !scanning, !cleaning else { return }
         let ids = CleanerConfig.runningApps().filter { r in t.ids.contains { BundleIDs.related(r.id, $0) } }.map(\.id)
         quit(ids)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.scan() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, !self.confirming, !self.cleanConfirmed else { return }   // never under an open confirmation
+            self.scan()
+        }
     }
 
     nonisolated static func progressText(_ id: String) -> String {

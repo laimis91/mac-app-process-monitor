@@ -59,11 +59,13 @@ func processOwners(_ procs: [Int32: RawProc], order: [Int32]? = nil) -> [Int32: 
     return memo
 }
 
-/// What identifies a process beyond its pid: pids are reused, the parent and start time aren't.
+/// What identifies a process beyond its pid: pids are reused, start times aren't. The parent
+/// isn't part of it: a process whose parent quit is moved to launchd but is still the same process.
 struct ProcIdentity: Equatable {
     let ppid: Int32
     let startSec: UInt64
     let startUsec: UInt64
+    static func == (a: Self, b: Self) -> Bool { a.startSec == b.startSec && a.startUsec == b.startUsec }
 }
 
 func procIdentity(_ pid: Int32) -> ProcIdentity? {
@@ -73,7 +75,7 @@ func procIdentity(_ pid: Int32) -> ProcIdentity? {
     return ProcIdentity(ppid: Int32(info.pbi_ppid), startSec: info.pbi_start_tvsec, startUsec: info.pbi_start_tvusec)
 }
 
-/// True only if `pid` is still the process sampled with `identity` (same parent, same start time).
+/// True only if `pid` is still the process sampled with `identity` (same start time).
 func stillSameProcess(_ pid: Int32, _ identity: ProcIdentity?) -> Bool {
     guard let identity, let now = procIdentity(pid) else { return false }
     return now == identity

@@ -131,7 +131,7 @@ enum FinderTrash {
                 r[p] = .failedAll(gone ? why + "; check the Trash" : why)
             } else if let c = code {
                 if gone, TrashLookup.found(URL(fileURLWithPath: p).lastPathComponent, fileID: before[p] ?? [], trash: trash) {
-                    r[p] = .moved(putBack: false)
+                    r[p] = .movedDespiteError
                 } else {
                     r[p] = .failed(gone ? "Finder reported error \(c); check the Trash" : "Finder couldn't move it (error \(c))")
                 }
