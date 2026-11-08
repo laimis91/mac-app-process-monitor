@@ -158,6 +158,17 @@ jobs:
             echo "::error::Release build contains developer-only switches: $(grep -oE "$DEBUG_SWITCHES" "$STRINGS" | sort -u | tr '\n' ' ')"
             exit 1
           fi
+          # The short names are invisible to strings, so also check that the debug-only code itself
+          # (headless scan/clean, window capture) isn't compiled in. Its symbols exist only with APPMON_DEBUG.
+          SYMS="$RUNNER_TEMP/appmon-symbols.txt"
+          if ! nm "$BIN" > "$SYMS" || [ ! -s "$SYMS" ]; then
+            echo "::error::Couldn't read the symbols of $BIN"
+            exit 1
+          fi
+          if grep -qE 'HeadlessO14runIfRequested|captureWindow' "$SYMS"; then
+            echo "::error::Release build contains developer-only code (Headless or captureWindow)"
+            exit 1
+          fi
 
       - name: Zip
         id: zip
