@@ -670,14 +670,36 @@ struct RootView: View {
                 Chip(text: s.paused ? "PAUSED" : "LIVE", color: s.paused ? Theme.yellow : Theme.green)
                 AppearanceButton()
             }
+            .padding(.leading, 92)   // sits right of the window buttons
+            .padding(.trailing, 18)
             PillPicker(title: "Tab", selection: $tab, items: Tab.allCases, icon: { $0.icon }) { $0.rawValue }
-                .frame(width: 220)
+                .frame(width: 220)   // centred on the window
         }
-        .padding(.leading, 76)   // sits right of the window buttons
-        .padding(.trailing, 18)
-        .frame(height: 32)
-        .padding(.bottom, 12)   // centre line (16pt down) matches the window buttons
+        .frame(height: TitleBarHeight.value)   // the window buttons are centred in this height (TallTitleBar)
+        .background(TallTitleBar())
     }
+}
+
+enum TitleBarHeight { static let value: CGFloat = 52 }
+
+/// Gives the window an empty unified toolbar, which makes macOS draw a 52pt title bar and centre the
+/// window buttons in it. The SwiftUI title row then has room above and below its taller controls.
+struct TallTitleBar: NSViewRepresentable {
+    final class Probe: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let w = window, w.toolbar == nil else { return }
+            let bar = NSToolbar(identifier: "AppMonitorTitleBar")
+            bar.showsBaselineSeparator = false
+            w.toolbar = bar
+            w.toolbarStyle = .unified
+            w.titleVisibility = .hidden
+            w.titlebarAppearsTransparent = true
+            w.titlebarSeparatorStyle = .none
+        }
+    }
+    func makeNSView(context: Context) -> NSView { Probe() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 // MARK: - App
