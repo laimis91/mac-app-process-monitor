@@ -125,9 +125,11 @@ Finder Apple events that move items to the Trash with Put Back (decision D8). It
 `com.apple.security.cs.allow-dyld-environment-variables`.
 
 Until the section 11 acceptance test passes, and while ad-hoc builds are around, the FDA banner
-SHOULD keep: "If you just updated App Monitor, switch it off and on again in Full Disk Access."
-Updating from an ad-hoc build to the first signed one always needs this once, because the
-requirement changes.
+SHOULD tell the user how to replace a stale grant: remove App Monitor from Full Disk Access with
+the − button, add it again with +, then quit and reopen. Updating from an ad-hoc build to the
+first signed one always needs this once, because the requirement changes. Switching the entry off
+and on is not enough: on macOS 27 it kept the old requirement and the signed 1.2.2 build stayed
+denied (kernel log: "deny(1) file-read-data ~/Library/Mail").
 
 ### 3.3 Administrator rights
 
