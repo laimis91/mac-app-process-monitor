@@ -1,5 +1,6 @@
-// Space map (spec 8): a tree of where space goes in the home folder and /Applications, and the
-// Space-map guard (spec 6.4). Foundation and Darwin only, so scripts/selftest.sh can compile it.
+// Space map (spec 8): a tree of where space goes in the home folder and /Applications. The
+// Space-map guard is in SpaceGuard.swift. Foundation and Darwin only, so scripts/selftest.sh
+// can compile it.
 //
 // Sizes are measured like `du -kx`: allocated blocks of every entry (folders included), hard
 // links counted once per scan, no symbolic links followed, one volume only.
@@ -147,16 +148,7 @@ enum SpaceScanner {
 
     /// Every entry of a folder except "." and "..", without following links.
     static func list(_ dir: String) -> [String]? {
-        guard let d = opendir(dir) else { return nil }
-        defer { closedir(d) }
-        var names: [String] = []
-        while let e = readdir(d) {
-            let name = withUnsafePointer(to: e.pointee.d_name) {
-                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
-            }
-            if name != "." && name != ".." { names.append(name) }
-        }
-        return names
+        try? ScanEngine.entries(dir).get()
     }
 
     struct Top {
@@ -219,13 +211,11 @@ enum SpaceScanner {
                      counter: SpaceCounter? = nil) -> SpaceNode? {
         // Never download cloud files or folders just to look at them (S11): a "dataless" item
         // reports an error instead of being fetched.
-        let prevPolicy = getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD)
-        _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD,
-                           IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
-        defer {
-            if prevPolicy >= 0 { _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, prevPolicy) }
-        }
+        ScanEngine.withoutDownloads { walkTree(path, opts: opts, links: links, cancel: cancel, counter: counter) }
+    }
 
+    private static func walkTree(_ path: String, opts: SpaceOptions, links: LinkSet, cancel: CancelFlag,
+                                 counter: SpaceCounter?) -> SpaceNode? {
         let rootName = URL(fileURLWithPath: path).lastPathComponent
         let cpath = strdup(path)
         defer { free(cpath) }
@@ -275,11 +265,13 @@ enum SpaceScanner {
             add(n)
         }
 
-        while let e = fts_read(fts) {
+        var stopped = false
+        var readErr: Int32 = 0
+        while let e = ScanEngine.ftsNext(fts, &readErr) {
             seen += 1
             if seen & 1023 == 0 {
                 counter?.add(1024, at: stack.last.map { String(cString: $0.ent.pointee.fts_path) } ?? path)
-                if cancel.isSet { break }
+                if cancel.isSet { stopped = true; break }
             }
             let info = Int32(e.pointee.fts_info)
             if e.pointee.fts_level == 0, let sp = e.pointee.fts_statp, info != FTS_DP {
@@ -337,138 +329,10 @@ enum SpaceScanner {
             top.node.flags.insert(.incomplete)
             finish(top)
         }
+        // fts failed before the end of the walk: the result isn't complete either (S5).
+        if !stopped && readErr != 0 { result?.flags.insert(.incomplete) }
         counter?.add(seen & 1023, at: path)
         return result
-    }
-}
-
-// MARK: - Space-map guard (spec 6.4)
-
-/// Decides whether an item the user picked in the Space map may be moved to the Trash.
-/// The S4 list and the Keychains, ~/.ssh and ~/.gnupg denials of the main guard still apply.
-struct SpaceGuard {
-    let home: String                   // canonical
-    let homeComps: [String]
-    let homeDev: Int32?
-    let uid: uid_t
-    let deny: [PathGuard.Deny]
-    var isPackage: (String) -> Bool = SpaceGuard.packageProbe
-    var isSynced: (String) -> Bool = SpaceGuard.syncedProbe
-
-    static let standardFolders: Set<String> = ["documents", "desktop", "downloads", "pictures", "movies", "music"]
-    /// Third-party sync folders directly in the home folder (also "OneDrive - Company" and similar).
-    static let syncFolders = ["dropbox", "google drive", "onedrive", "box", "pcloud drive"]
-
-    init(roots: Roots) {
-        home = Roots.canonical(roots.home)
-        homeComps = PathGuard.comps(home)
-        homeDev = ScanEngine.lstatInfo(home)?.st_dev
-        uid = getuid()
-        let c: (String) -> [String] = { PathGuard.comps(Roots.canonical($0)) }
-        deny = PathGuard.systemDeny(roots)
-            + [".ssh", ".gnupg", "Library/Keychains"].map { PathGuard.Deny(path: c(roots.h($0)), except: []) }
-    }
-
-    /// What is known about an item, from the disk (`check`) or from the scanned tree (`reason`).
-    struct Facts {
-        var rel: [String]              // names below the home folder, the item's own name last
-        var ancestorPackage = false    // a folder it is inside is a package
-        var synced = false             // it, or a folder it is inside, is cloud-synced
-        var ownedByUser = true
-        var sameVolume = true
-    }
-
-    static func isSyncFolder(_ name: String) -> Bool {
-        let n = name.lowercased()
-        return syncFolders.contains { n == $0 || n.hasPrefix($0 + " ") || n.hasPrefix($0 + "-") || n.hasPrefix($0 + " (") }
-    }
-
-    /// The rules that depend on where the item is and what it is. nil means it may be picked.
-    static func rule(_ f: Facts) -> String? {
-        let r = f.rel.map { $0.lowercased() }
-        guard let first = r.first else { return "Your home folder itself can't be moved" }
-        if first == "library" { return "Everything in ~/Library is Reveal only" }
-        if r.count == 1 && standardFolders.contains(first) {
-            return "A standard folder can't be moved. Items inside it can."
-        }
-        if first.hasPrefix(".") { return "Hidden folders in your home folder are Reveal only" }
-        if r.contains(where: { $0.hasPrefix(".") }) {
-            return "Hidden items, and items inside hidden folders (such as .git), are Reveal only. You can move the folder that holds them."
-        }
-        if r.contains(where: { $0.hasSuffix(".photoslibrary") }) { return "Photo libraries are never moved from here" }
-        if r.contains(where: { $0.hasSuffix(".app") }) {
-            return "Apps are removed with an uninstaller, not from the Space map"
-        }
-        if isSyncFolder(first) || f.synced { return "Synced item: remove it in Finder, because it would be deleted on every synced device" }
-        if f.ancestorPackage { return "Inside a package. You can move the whole package." }
-        if !f.ownedByUser { return "Not owned by you" }
-        if !f.sameVolume { return "On another volume" }
-        return nil
-    }
-
-    /// The full check, right before acting and before the confirmation: nil if the item may be
-    /// moved, otherwise the reason. Only the parent folder is resolved; the item is judged where
-    /// it sits (S12).
-    func check(_ path: String) -> String? {
-        let loc: (item: [String], parent: String, st: stat)
-        switch PathGuard.locate(path) {
-        case .failure(let r): return r.reason
-        case .success(let l): loc = l
-        }
-        for e in deny where PathGuard.within(loc.item, e.path) && !e.except.contains(where: { PathGuard.within(loc.item, $0) }) {
-            return "Protected location"
-        }
-        if loc.item == homeComps { return "Your home folder itself can't be moved" }
-        guard PathGuard.strictlyInside(loc.item, homeComps) else { return "Outside your home folder: Reveal only" }
-        // Names below home, in their real case, from the canonical parent.
-        let parentNames = loc.parent.split(separator: "/").map(String.init)
-        let rel = Array(parentNames.dropFirst(homeComps.count)) + [URL(fileURLWithPath: path).lastPathComponent]
-        var f = Facts(rel: rel)
-        if let quick = Self.rule(f) { return quick }    // decided by the path alone: no probes needed
-        var dir = home
-        for name in rel.dropLast() {
-            dir += "/" + name
-            if isPackage(dir) { f.ancestorPackage = true }
-            if isSynced(dir) { f.synced = true }
-        }
-        if isSynced(path) { f.synced = true }
-        f.ownedByUser = loc.st.st_uid == uid
-        f.sameVolume = homeDev != nil && loc.st.st_dev == homeDev
-        return Self.rule(f)
-    }
-
-    /// The same rules, from what the scan recorded (shown before the user picks an item).
-    /// `home` is the home folder's top-level node.
-    static func reason(for n: SpaceNode, home: SpaceNode?) -> String? {
-        if n.flags.contains(.shell) && n.base != nil { return "This folder itself can't be moved" }
-        var rel: [String] = []
-        var f = Facts(rel: [])
-        var x: SpaceNode? = n
-        while let c = x, c !== home {
-            if c.base != nil { return "Outside your home folder: Reveal only" }   // another top
-            rel.insert(c.name, at: 0)
-            if c !== n && c.flags.contains(.package) { f.ancestorPackage = true }
-            if c.flags.contains(.synced) { f.synced = true }
-            x = c.parent
-        }
-        guard x != nil else { return "Outside your home folder: Reveal only" }
-        f.rel = rel
-        f.ownedByUser = !n.flags.contains(.foreign)
-        f.sameVolume = !n.flags.contains(.otherVolume)
-        if let why = rule(f) { return why }
-        if let b = n.blocker { return b }
-        if n.note != nil || n.incomplete { return "Part of it couldn't be read, so it can't be moved as a whole" }
-        return nil
-    }
-
-    // Probes. Doubt means keep (S5): an error counts as "package" and as "synced".
-    static func packageProbe(_ path: String) -> Bool {
-        do { return try URL(fileURLWithPath: path).resourceValues(forKeys: [.isPackageKey]).isPackage == true }
-        catch { return true }
-    }
-    static func syncedProbe(_ path: String) -> Bool {
-        do { return try URL(fileURLWithPath: path).resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem == true }
-        catch { return true }
     }
 }
 
@@ -526,9 +390,8 @@ enum SpaceMap {
     /// Space-map checks: the guard, the same file, nothing open inside, nothing protected inside.
     static func item(_ n: SpaceNode) -> (Category, CleanItem) {
         var i = CleanItem(path: n.path, name: n.name, size: n.size, newest: n.newestDate, risk: .review,
-                          method: .trash, reason: "Picked in the Space map", allowRoot: "", fileID: n.fileID)
+                          method: .trash, reason: "Picked in the Space map", scope: .spaceMap, fileID: n.fileID)
         i.checkOpenFiles = true
-        i.spaceMap = true
         let c = Category(id: categoryID, title: "Space map", group: .general, method: .trash,
                          explanation: "An item you picked in the Space map", items: [i])
         return (c, i)

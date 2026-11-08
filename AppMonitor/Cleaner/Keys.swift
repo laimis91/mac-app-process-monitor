@@ -101,6 +101,20 @@ enum Protection {
         }
         return false
     }
+
+    /// The vendor or library names of the prefix entries ("electron" for com.electron.*), as
+    /// EvidenceName keys.
+    static let prefixNames: Set<String> = Set(entries.filter { $0.hasSuffix(".*") }.compactMap { e in
+        e.dropLast(2).split(separator: ".").last.map { EvidenceName.key(String($0)) }
+    })
+
+    /// A whole name (an app name), compared as an EvidenceName key, that the protection list
+    /// covers: a protected key ("Code", "Homebrew"), or the vendor or library name of a prefix
+    /// entry ("Electron", "Microsoft").
+    static func isProtectedName(_ name: String) -> Bool {
+        let k = EvidenceName.key(name)
+        return isProtected(k) || prefixNames.contains(k)
+    }
 }
 
 enum Versions {

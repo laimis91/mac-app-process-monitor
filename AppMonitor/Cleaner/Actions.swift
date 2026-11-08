@@ -1,159 +1,31 @@
-// Actions (spec 2 S2, S3, S8, S13 and 6.5): the Trash mover, the tool-command runner and the
-// action-time re-checks. Foundation and Darwin only.
+// Actions (spec 2 S2, S3, S8, S13 and 6.5): the Trash mover, running tool commands and the
+// action-time re-checks. The probes they use (tool runner, open files, processes) are in
+// Probes.swift. Foundation and Darwin only.
 
 import Foundation
 
-// MARK: - Tool lookup and runner
-
-struct ToolLocator {
-    let dirs: [String]
-    let xcodeSelectOK: Bool
-
-    /// The tool at a known absolute path. Never looked up through a shell or PATH.
-    func find(_ tool: String) -> String? {
-        for d in dirs {
-            let candidates = tool == "dotnet" ? [d + "/dotnet"] : [d + "/" + tool]
-            for p in candidates where FileManager.default.isExecutableFile(atPath: p) {
-                // /usr/bin developer tools are stubs that open an install dialog without the CLT.
-                if d == "/usr/bin" && !xcodeSelectOK { return nil }
-                return p
-            }
+/// Finds an item in the user's Trash after a move whose outcome is unclear (Finder reported an
+/// error but the item is gone). Only the same file counts: same device and inode as before the
+/// move, under its own name or a name Finder made unique ("name 2", "name 10.32.16.ext").
+enum TrashLookup {
+    /// Names in `trash` that could be `name` after a move, the plain name first.
+    static func candidates(_ name: String, in names: [String]) -> [String] {
+        let ext = (name as NSString).pathExtension
+        let stem = ext.isEmpty ? name : String(name.dropLast(ext.count + 1))
+        let tail = ext.isEmpty ? "" : "." + ext
+        let more = names.filter { n in
+            n != name && (n.hasPrefix(name + " ")
+                          || (n.hasPrefix(stem + " ") && n.hasSuffix(tail) && n.count > stem.count + 1 + tail.count))
         }
-        return nil
+        return [name] + more.sorted()
     }
 
-    static func commandLineToolsInstalled() -> Bool {
-        ToolRunner.run("/usr/bin/xcode-select", ["-p"], timeout: 10).status == 0
-    }
-}
-
-enum ToolRunner {
-    struct Result { let status: Int32; let output: String; let timedOut: Bool }
-
-    /// Runs `exe` with a fixed argument list: no shell, nothing interpolated.
-    static func run(_ exe: String, _ args: [String], timeout: TimeInterval = 300) -> Result {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: exe)
-        p.arguments = args
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = URL(fileURLWithPath: exe).deletingLastPathComponent().path + ":/usr/bin:/bin"
-        env["NO_COLOR"] = "1"
-        p.environment = env
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = pipe
-        p.standardInput = FileHandle.nullDevice
-        var data = Data()
-        let lock = NSLock()
-        let eof = DispatchSemaphore(value: 0)
-        pipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData
-            if d.isEmpty { h.readabilityHandler = nil; eof.signal(); return }
-            lock.lock(); if data.count < 200_000 { data.append(d) }; lock.unlock()
-        }
-        let done = DispatchSemaphore(value: 0)
-        p.terminationHandler = { _ in done.signal() }     // set before run(), so a fast exit isn't missed
-        do { try p.run() } catch {
-            pipe.fileHandleForReading.readabilityHandler = nil
-            return Result(status: -1, output: "Couldn't start \(exe): \(error.localizedDescription)", timedOut: false)
-        }
-        var timedOut = false
-        var exited = true
-        if done.wait(timeout: .now() + timeout) == .timedOut {
-            timedOut = true
-            p.terminate()
-            if done.wait(timeout: .now() + 5) == .timedOut {
-                kill(p.processIdentifier, SIGKILL)
-                exited = done.wait(timeout: .now() + 5) == .success
-            }
-        }
-        // A child the tool left running may keep the pipe open: wait for the end of output briefly, never forever.
-        if eof.wait(timeout: .now() + 2) == .timedOut { pipe.fileHandleForReading.readabilityHandler = nil }
-        lock.lock(); let text = String(decoding: data, as: UTF8.self); lock.unlock()
-        return Result(status: timedOut || !exited ? -2 : p.terminationStatus, output: text, timedOut: timedOut)
-    }
-}
-
-// MARK: - Open-file snapshot (S13c)
-
-/// Paths the current user's processes have open, as working folder or mapped into memory.
-struct OpenFiles {
-    let paths: [(String, String)]   // (lowercased path, process name)
-
-    /// nil if the snapshot couldn't be taken for one of the user's processes.
-    static func snapshot() -> OpenFiles? {
-        let uid = getuid()
-        let n = proc_listallpids(nil, 0)
-        guard n > 0 else { return nil }
-        var pids = [Int32](repeating: 0, count: Int(n) + 64)
-        let got = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
-        guard got > 0 else { return nil }
-        var out: [(String, String)] = []
-        for pid in pids.prefix(Int(got)) where pid > 0 {
-            var bsd = proc_bsdinfo()
-            let r = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, Int32(MemoryLayout<proc_bsdinfo>.size))
-            if r <= 0 { continue }                               // gone, or not ours to see
-            guard bsd.pbi_uid == uid, bsd.pbi_status != UInt32(SZOMB) else { continue }   // zombies hold no files
-            let name = withUnsafePointer(to: bsd.pbi_comm) {
-                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXCOMLEN)) { String(cString: $0) }
-            }
-            guard let paths = Self.paths(of: pid) else {
-                // Exited or became a zombie meanwhile: nothing open any more.
-                var again = proc_bsdinfo()
-                if proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &again, Int32(MemoryLayout<proc_bsdinfo>.size)) <= 0
-                    || again.pbi_status == UInt32(SZOMB) { continue }
-                return nil
-            }
-            for p in paths { out.append((p.lowercased(), name)) }
-        }
-        return OpenFiles(paths: out)
-    }
-
-    static func cString<T>(_ t: T) -> String {
-        withUnsafePointer(to: t) { $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout<T>.size) { String(cString: $0) } }
-    }
-
-    private static func paths(of pid: Int32) -> [String]? {
-        var out: [String] = []
-        // working folder
-        var vp = proc_vnodepathinfo()
-        if proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vp, Int32(MemoryLayout<proc_vnodepathinfo>.size)) > 0 {
-            out.append(cString(vp.pvi_cdir.vip_path))
-        } else { return nil }
-        // open files
-        let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
-        guard size >= 0 else { return nil }
-        let count = Int(size) / MemoryLayout<proc_fdinfo>.size + 16
-        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: count)
-        let used = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, Int32(count * MemoryLayout<proc_fdinfo>.size))
-        guard used >= 0 else { return nil }
-        for fd in fds.prefix(Int(used) / MemoryLayout<proc_fdinfo>.size) where fd.proc_fdtype == PROX_FDTYPE_VNODE {
-            var vi = vnode_fdinfowithpath()
-            if proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &vi, Int32(MemoryLayout<vnode_fdinfowithpath>.size)) > 0 {
-                out.append(cString(vi.pvip.vip_path))
-            }
-        }
-        // memory-mapped files
-        var addr: UInt64 = 0
-        var last = ""
-        for _ in 0..<100_000 {
-            var ri = proc_regionwithpathinfo()
-            let r = proc_pidinfo(pid, PROC_PIDREGIONPATHINFO, addr, &ri, Int32(MemoryLayout<proc_regionwithpathinfo>.size))
-            if r <= 0 { break }
-            let p = cString(ri.prp_vip.vip_path)
-            if !p.isEmpty && p != last { out.append(p); last = p }
-            let next = ri.prp_prinfo.pri_address + ri.prp_prinfo.pri_size
-            if next <= addr { break }
-            addr = next
-        }
-        return out
-    }
-
-    /// The name of a process with something open at or inside `path`.
-    func user(of path: String) -> String? {
-        let p = path.lowercased()
-        for (o, name) in paths where o == p || o.hasPrefix(p + "/") { return name }
-        return nil
+    /// True if the file with `fileID` sits directly in `trash` under a likely name.
+    static func found(_ name: String, fileID: [UInt64], trash: String) -> Bool {
+        guard fileID.count == 2 else { return false }
+        var listed: [String] = []
+        if case .ok(let names) = ScanEngine.children(trash) { listed = names }   // may be refused: then the plain name only
+        return candidates(name, in: listed).contains { ScanEngine.fileID(trash + "/" + $0) == fileID }
     }
 }
 
@@ -210,60 +82,6 @@ enum Cleaner {
         var openFiles: OpenFiles? = nil
         var stopped: String? = nil            // set by the first whole-request failure: no more Finder requests
 
-        for (cat, item) in selected {
-            progress(item.name)
-            func skip(_ why: String) {
-                out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .skipped, reason: why))
-            }
-            guard item.selectable else { skip("Can't be selected"); continue }
-            if let app = env.inventory.runningOwner(item.owners, names: item.ownerNames, snapshot: env.runningNow()) {
-                skip("\(app) is running"); continue
-            }
-
-            if item.method == .tool {
-                guard let tool = cat.tool else { skip("No command"); continue }
-                out.append(runTool(cat, item, tool, env))
-                continue
-            }
-            guard item.method == .trash else { skip("Can't be cleaned"); continue }
-            if let why = stopped {
-                out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .failed, reason: why))
-                continue
-            }
-
-            // Slow checks first: (d) age limit, readability and sockets, then (c) open files.
-            do {
-                let m = ScanEngine.measure(item.path, links: nil, inspect: item.spaceMap || item.inspect,
-                                           synced: item.spaceMap ? env.spaceGuard?.isSynced : nil,
-                                           strictApps: item.inspect && !item.spaceMap)
-                if let why = m.protected { skip(why); continue }
-                guard m.complete else { skip("Part of it can't be read"); continue }
-                guard !m.special else { skip("Contains a socket or pipe an app may be using"); continue }
-                guard !m.locked else { skip("Contains a locked file"); continue }
-                if let st = ScanEngine.lstatInfo(item.path), !userCanMove(item.path, st) {
-                    skip("Needs administrator rights. Remove it in Finder."); continue
-                }
-                if let limit = item.ageLimitDays {
-                    guard let d = days(since: m.newest, now: env.now()), d >= limit else { skip("Changed recently"); continue }
-                }
-            }
-            if item.checkOpenFiles {
-                if !snapshotTaken { openFiles = OpenFiles.snapshot(); snapshotTaken = true }
-                guard let s = openFiles else { skip("Couldn't check for open files"); continue }
-                if let who = s.user(of: item.path) { skip("In use by \(who)"); continue }
-            }
-            if env.dryRun {
-                if let why = lastChecks(item, env) { skip(why); continue }
-                out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .planned,
-                                   reason: "Move to Trash", size: item.size))
-                continue
-            }
-            pending.append((cat, item))
-            if pending.count >= env.batchSize { flush() }
-        }
-        flush()
-        return out
-
         /// Moves the waiting items, after the quick checks once more, right before acting.
         func flush() {
             guard !pending.isEmpty else { return }
@@ -306,6 +124,63 @@ enum Cleaner {
                 }
             }
         }
+
+        for (cat, item) in selected {
+            progress(item.name)
+            func skip(_ why: String) {
+                out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .skipped, reason: why))
+            }
+            guard item.selectable else { skip("Can't be selected"); continue }
+            if let app = env.inventory.runningOwner(item.owners, names: item.ownerNames, snapshot: env.runningNow()) {
+                skip("\(app) is running"); continue
+            }
+
+            if item.method == .tool {
+                guard let tool = cat.tool else { skip("No command"); continue }
+                out.append(runTool(cat, item, tool, env))
+                continue
+            }
+            guard item.method == .trash else { skip("Can't be cleaned"); continue }
+            if let why = stopped {
+                out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .failed, reason: why))
+                continue
+            }
+            // (a) and (e) before the slow checks too, so nothing outside its guard is walked;
+            // they run again right before acting.
+            if let why = locationChecks(item, env) { skip(why); continue }
+
+            // Slow checks first: (d) age limit, readability and sockets, then (c) open files.
+            do {
+                let m = ScanEngine.measure(item.path, links: nil, inspect: item.spaceMap || item.inspect,
+                                           synced: item.spaceMap ? env.spaceGuard?.isSynced : nil,
+                                           strictApps: item.inspect && !item.spaceMap)
+                if let why = m.protected { skip(why); continue }
+                guard m.complete else { skip("Part of it can't be read"); continue }
+                guard !m.special else { skip("Contains a socket or pipe an app may be using"); continue }
+                guard !m.locked else { skip("Contains a locked file"); continue }
+                if let st = ScanEngine.lstatInfo(item.path), !userCanMove(item.path, st) {
+                    skip("Needs administrator rights. Remove it in Finder."); continue
+                }
+                if let limit = item.ageLimitDays {
+                    guard let d = days(since: m.newest, now: env.now()), d >= limit else { skip("Changed recently"); continue }
+                }
+            }
+            if item.checkOpenFiles {
+                if !snapshotTaken { openFiles = OpenFiles.snapshot(); snapshotTaken = true }
+                guard let s = openFiles else { skip("Couldn't check for open files"); continue }
+                if let who = s.user(of: item.path) { skip("In use by \(who)"); continue }
+            }
+            if env.dryRun {
+                if let why = lastChecks(item, env) { skip(why); continue }
+                out.append(Outcome(path: item.path, name: item.name, category: cat.id, status: .planned,
+                                   reason: "Move to Trash", size: item.size))
+                continue
+            }
+            pending.append((cat, item))
+            if pending.count >= env.batchSize { flush() }
+        }
+        flush()
+        return out
     }
 
     /// The reason of the first whole-request failure in a set of results, if any.
@@ -330,14 +205,34 @@ enum Cleaner {
         if let app = env.inventory.runningOwner(item.owners, names: item.ownerNames, snapshot: env.runningNow()) {
             return "\(app) is running"
         }
-        if item.spaceMap {
-            guard let g = env.spaceGuard else { return "No Space-map guard" }
-            if let why = g.check(item.path) { return why }
-        } else if let why = env.guardian.check(item.path, allowRoot: item.allowRoot, appBundle: item.appBundle) { return why }
-        if ScanEngine.fileID(item.path) != item.fileID { return "Changed since the scan" }
+        if let why = locationChecks(item, env) { return why }
         // Uninstaller items: no process may run from inside the app's bundle, whatever its bundle ID (spec 10).
         if let b = item.insideBundle, let who = env.processesInside(b).first { return "\(who) is running from inside the app" }
         return nil
+    }
+
+    /// (a) the guard the item's scope names, and (e) the same item as at scan time.
+    static func locationChecks(_ item: CleanItem, _ env: CleanEnvironment) -> String? {
+        if let why = guardCheck(item, env) { return why }
+        if ScanEngine.fileID(item.path) != item.fileID { return "Changed since the scan" }
+        return nil
+    }
+
+    /// The one guard for the item's scope. Tool and info rows have none, so they are never moved.
+    static func guardCheck(_ item: CleanItem, _ env: CleanEnvironment) -> String? {
+        switch item.scope {
+        case .spaceMap:
+            guard let g = env.spaceGuard else { return "No Space-map guard" }
+            return g.check(item.path)
+        case .rule(let root):
+            guard !root.isEmpty else { return "No rule folder for this item" }
+            return env.guardian.check(item.path, allowRoot: root)
+        case .appBundle(let root):
+            guard !root.isEmpty else { return "No app folder for this item" }
+            return env.guardian.check(item.path, allowRoot: root, appBundle: true)
+        case .none:
+            return "Nothing may be moved from this row"
+        }
     }
 
     /// Fallback mover: works without Finder, but macOS doesn't record where items came from,

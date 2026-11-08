@@ -126,7 +126,7 @@ extension Demo {
                   _ reason: String, running: String? = nil) -> CleanItem {
             var i = CleanItem(path: rel.hasPrefix("tool://") ? rel : h + "/" + rel,
                               name: (rel as NSString).lastPathComponent, size: Int64(mb * 1_048_576),
-                              newest: ago(age), risk: risk, method: method, reason: reason, allowRoot: "", fileID: [])
+                              newest: ago(age), risk: risk, method: method, reason: reason, scope: .none, fileID: [])
             i.runningOwner = running
             return i
         }
@@ -134,7 +134,7 @@ extension Demo {
                   _ args: [String], _ why: String) -> Category {
             var i = item(rel, mb, risk, .tool, why)
             i = CleanItem(path: i.path, name: title, size: i.size, newest: i.newest, risk: risk, method: .tool,
-                          reason: why, allowRoot: "", fileID: [])
+                          reason: why, scope: .none, fileID: [])
             return Category(id: id, title: title, group: .developer, method: .tool, explanation: why, items: [i],
                             tool: ToolCommand(tool: t, commands: [args], preview: nil, executable: "/opt/homebrew/bin/" + t))
         }
@@ -255,7 +255,7 @@ extension Demo {
     }
 }
 
-// MARK: - Leftovers demo (made up)
+// MARK: - Uninstaller and leftovers demo (made up)
 
 extension Demo {
     /// A made-up app being uninstalled (spec 10), with each kind of row.
@@ -267,9 +267,8 @@ extension Demo {
         func item(_ rel: String, _ mb: Double, _ risk: Risk, _ reason: String, pre: Bool = false, app: Bool = false) -> CleanItem {
             var i = CleanItem(path: app ? rel : h + "/" + rel, name: (rel as NSString).lastPathComponent, size: Int64(mb * 1_048_576),
                               newest: now.addingTimeInterval(-3 * 86_400), risk: risk, method: risk == .info ? .none : .trash,
-                              reason: reason, allowRoot: "", fileID: [])
+                              reason: reason, scope: app ? .appBundle(root: "") : .none, fileID: [])   // never passes a guard
             i.preselect = pre
-            i.appBundle = app
             return i
         }
         let t = UninstallTarget(app: app, ids: [id, id + ".widget"], groups: ["group.com.example.shared"])
@@ -302,7 +301,7 @@ extension Demo {
         func item(_ rel: String, _ mb: Double, age: Double, limit: Int = 30, _ reason: String) -> CleanItem {
             CleanItem(path: h + "/" + rel, name: (rel as NSString).lastPathComponent, size: Int64(mb * 1_048_576),
                       newest: now.addingTimeInterval(-age * 86_400), risk: .review, method: .trash, reason: reason,
-                      allowRoot: "", fileID: [], ageLimitDays: limit)
+                      scope: .none, fileID: [], ageLimitDays: limit)
         }
         func gone(_ noun: String, _ app: String, _ id: String, _ d: Int) -> String {
             "\(noun) of \(app) (\(id)), an app not found on this Mac, unchanged for \(d) days, limit 30."

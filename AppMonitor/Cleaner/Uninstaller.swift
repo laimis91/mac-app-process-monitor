@@ -1,10 +1,9 @@
 // Uninstaller (spec 10): which files belong to the one app the user chose, the refusals, and the
 // Disk-tab categories. It has its own matching rules: the leftover rules (no installed owner, age
 // limits) would exclude the chosen app's own data.
-// Foundation, Darwin and Security only (entitlements), so scripts/selftest.sh can compile it.
+// Foundation and Darwin only, so scripts/selftest.sh can compile it. Its probes are in Probes.swift.
 
 import Foundation
-import Security
 
 /// The app being uninstalled.
 struct UninstallTarget {
@@ -108,9 +107,11 @@ enum Uninstaller {
     /// with com.vendor.app and com.vendor.app.pro installed, com.vendor.app.pro's data stays.
     /// `lookup` asks LaunchServices (probe 1) about a key that is longer than the target ID it
     /// matched, and each shorter ID down to it: an app installed outside the scanned folders
-    /// (com.vendor.app.beta in Downloads) then wins too.
+    /// (com.vendor.app.beta in Downloads) then wins too. An app LaunchServices names is the
+    /// target only by a target ID or by sitting inside `targetPath`; an empty `targetPath`
+    /// matches no app.
     static func owner(of key: String, target: [String], others: [(id: String, name: String)],
-                      lookup: ((String) -> AppInfo?)? = nil, targetPath: String = "") -> Owner? {
+                      lookup: ((String) -> AppInfo?)? = nil, targetPath: String) -> Owner? {
         let k = key.lowercased()
         var best = -1
         var who: Owner?
@@ -120,8 +121,8 @@ enum Uninstaller {
         if who == .target, let lookup, k.count > best {
             for pre in LeftoverMatcher.prefixes(key) where pre.count > best {
                 guard let a = lookup(pre) else { continue }
-                let same = target.contains(a.id.lowercased())
-                    || PathGuard.within(PathGuard.comps(a.path), PathGuard.comps(targetPath))
+                let tp = PathGuard.comps(targetPath)
+                let same = target.contains(a.id.lowercased()) || (!tp.isEmpty && PathGuard.within(PathGuard.comps(a.path), tp))
                 if !same { return .other(a.name) }
             }
         }
@@ -144,10 +145,13 @@ enum Uninstaller {
         return out
     }
 
-    /// Name keys the target is known by (for folders named after the app), without other apps' names.
+    /// Name keys the target is known by (for folders named after the app), without other apps'
+    /// names and without names the protection list covers (an Electron app's executable is
+    /// "Electron", which says nothing about whose folder it is).
     static func nameKeys(_ app: AppInfo, others: [String]) -> Set<String> {
         let taken = Set(others.map(EvidenceName.key))
-        let mine = Set(([app.name] + app.names).map(EvidenceName.key)).filter { $0.count >= 4 }
+        let mine = Set(([app.name] + app.names).filter { !Protection.isProtectedName($0) }.map(EvidenceName.key))
+            .filter { $0.count >= 4 }
         return mine.subtracting(taken)
     }
 
@@ -172,6 +176,47 @@ enum Uninstaller {
     struct Result {
         var target: UninstallTarget
         var categories: [Category]
+    }
+
+    /// Why an entry of a place belongs to the target (spec 10).
+    struct Match { var why: String; var shared: [String] = []; var byName = false }
+
+    /// The per-place rule for the entry `n` at `p`: an app container by its own record, a group
+    /// container by an entitlement or its ID, a launch job by its label, anything else by bundle
+    /// ID or, in a few places, by the app's name. nil if it isn't the target's.
+    static func match(_ n: String, at p: String, in place: LeftoverPlace, app: AppInfo, target t: UninstallTarget,
+                      named: Set<String>, own: (String) -> Owner?, claimers: (String) -> [String]) -> Match? {
+        let key = CandidateKey.parse(n)
+        switch place.id {
+        case "containers":
+            // Only the container's own record says whose it is (spec 10).
+            guard let meta = NSDictionary(contentsOfFile: p + "/.com.apple.containermanagerd.metadata.plist")?["MCMMetadataIdentifier"] as? String,
+                  t.ids.contains(meta.lowercased()),
+                  own(meta) == .target else { return nil }
+            return Match(why: "\(place.noun) of \(meta)")
+        case "groupContainers":
+            let byGroup = t.groups.contains(n.lowercased())
+            let o = key.kind == .bundleID ? own(key.key) : nil
+            if case .other = o { return nil }
+            guard byGroup || o == .target else { return nil }
+            return Match(why: byGroup ? "\(place.noun) of the app group \(n), listed in \(app.name)'s entitlements"
+                                      : "\(place.noun) of \(key.key)",
+                         shared: claimers(n.lowercased()))
+        case "launchAgents", "sysLaunchAgents", "sysLaunchDaemons":
+            let label = (NSDictionary(contentsOfFile: p)?["Label"] as? String) ?? key.key
+            guard own(label) == .target else { return nil }
+            return Match(why: "\(place.noun) \(label)")
+        default:
+            if key.kind == .bundleID {
+                guard own(key.key) == .target else { return nil }
+                return Match(why: "\(place.noun) of \(key.key)")
+            }
+            if namedPlaces.contains(place.id) && place.tier == .orphan && named.contains(EvidenceName.key(n)) {
+                return Match(why: "\(place.noun) named like \(app.name). It isn't matched by bundle ID, so check it belongs to this app.",
+                             byName: true)
+            }
+            return nil
+        }
     }
 
     /// Lists the app bundle and every related item (spec 10). Nothing here moves anything.
@@ -216,9 +261,8 @@ enum Uninstaller {
         let am = ScanEngine.measure(path, links: ctx.links, cancel: ctx.cancel)
         var appItem = CleanItem(path: path, name: URL(fileURLWithPath: path).lastPathComponent, size: am.size,
                                 newest: am.newest, risk: .requested, method: .trash,
-                                reason: "The app you chose (\(app.id))", allowRoot: appRoot, fileID: am.fileID,
+                                reason: "The app you chose (\(app.id))", scope: .appBundle(root: appRoot), fileID: am.fileID,
                                 owners: t.ids, ownerNames: ownerNames, checkOpenFiles: true)
-        appItem.appBundle = true
         appItem.insideBundle = path
         if !am.complete { appItem = info(appItem, "Part of the app can't be read. Remove it in Finder.") }
         else if am.locked { appItem = info(appItem, "The app contains a locked file. Remove it in Finder.") }
@@ -228,50 +272,19 @@ enum Uninstaller {
             if ctx.cancel.isSet { break }
             progress("Looking in \(place.rel)…")
             let root = place.root(ctx.roots)
-            if place.needsFDA && ctx.fda != .granted {
-                if ScanEngine.lstatInfo(root) != nil { fdaPlaces.append(place.rel) }
-                continue
-            }
-            guard case .ok(let names) = ScanEngine.children(root) else {
-                if case .noAccess(let e) = ScanEngine.children(root), e == EPERM { fdaPlaces.append(place.rel) }
-                continue
+            let names: [String]
+            switch Leftovers.list(place, ctx) {
+            case .skip, .failed: continue
+            case .needsFDA: fdaPlaces.append(place.rel); continue
+            case .ok(let n): names = n
             }
             for n in names {
                 if let s = place.suffix, !n.lowercased().hasSuffix(s) { continue }
                 let p = root + "/" + n
                 guard !ctx.ignored(p), let st = ScanEngine.lstatInfo(p), (st.st_mode & S_IFMT) != S_IFLNK else { continue }
-                let key = CandidateKey.parse(n)
-                var why: String
-                var shared: [String] = []
-                var byName = false
-                switch place.id {
-                case "containers":
-                    // Only the container's own record says whose it is (spec 10).
-                    guard let meta = NSDictionary(contentsOfFile: p + "/.com.apple.containermanagerd.metadata.plist")?["MCMMetadataIdentifier"] as? String,
-                          t.ids.contains(meta.lowercased()),
-                          own(meta) == .target else { continue }
-                    why = "\(place.noun) of \(meta)"
-                case "groupContainers":
-                    let byGroup = t.groups.contains(n.lowercased())
-                    let o = key.kind == .bundleID ? own(key.key) : nil
-                    if case .other = o { continue }
-                    guard byGroup || o == .target else { continue }
-                    why = byGroup ? "\(place.noun) of the app group \(n), listed in \(app.name)'s entitlements"
-                                  : "\(place.noun) of \(key.key)"
-                    shared = claimers(n.lowercased())
-                case "launchAgents", "sysLaunchAgents", "sysLaunchDaemons":
-                    let label = (NSDictionary(contentsOfFile: p)?["Label"] as? String) ?? key.key
-                    guard own(label) == .target else { continue }
-                    why = "\(place.noun) \(label)"
-                default:
-                    if key.kind == .bundleID {
-                        guard own(key.key) == .target else { continue }
-                        why = "\(place.noun) of \(key.key)"
-                    } else if namedPlaces.contains(place.id) && place.tier == .orphan && named.contains(EvidenceName.key(n)) {
-                        why = "\(place.noun) named like \(app.name). It isn't matched by bundle ID, so check it belongs to this app."
-                        byName = true
-                    } else { continue }
-                }
+                guard let hit = match(n, at: p, in: place, app: app, target: t, named: named, own: own, claimers: claimers)
+                else { continue }
+                let (why, shared, byName) = (hit.why, hit.shared, hit.byName)
                 let k: Kind = byName ? .review : kind(place)
                 let isInfo = place.system || k == .info
                 let m = ScanEngine.measure(p, links: ctx.links, cancel: ctx.cancel, inspect: !isInfo, strictApps: true)
@@ -288,7 +301,7 @@ enum Uninstaller {
                 var item = CleanItem(path: p, name: n, size: m.size, newest: m.complete ? m.newest : nil,
                                      risk: k == .safe ? .safe : .review, method: .trash,
                                      reason: why + (k == .data ? ". Contains your settings and data." : ""),
-                                     allowRoot: place.system ? "" : root, fileID: m.fileID, owners: t.ids,
+                                     scope: place.system ? .none : .rule(root: root), fileID: m.fileID, owners: t.ids,
                                      ownerNames: ownerNames, checkOpenFiles: true)
                 item.inspect = true
                 item.preselect = k == .data
@@ -339,8 +352,7 @@ enum Uninstaller {
     /// The same item as Info: shown, never selectable.
     static func info(_ i: CleanItem, _ reason: String) -> CleanItem {
         var n = CleanItem(path: i.path, name: i.name, size: i.size, newest: i.newest, risk: .info, method: .none,
-                          reason: reason, allowRoot: i.allowRoot, fileID: i.fileID, owners: i.owners, ownerNames: i.ownerNames)
-        n.appBundle = i.appBundle
+                          reason: reason, scope: i.scope, fileID: i.fileID, owners: i.owners, ownerNames: i.ownerNames)
         n.insideBundle = i.insideBundle
         return n
     }
@@ -367,46 +379,5 @@ enum Uninstaller {
             }
         }
         return out.sorted { $0.app.name.localizedCaseInsensitiveCompare($1.app.name) == .orderedAscending }
-    }
-}
-
-// MARK: - System probes without AppKit
-
-enum Entitlements {
-    /// `com.apple.security.application-groups` of a signed bundle, lowercased.
-    static func appGroups(_ path: String) -> [String] {
-        var code: SecStaticCode?
-        guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess, let code
-        else { return [] }
-        var info: CFDictionary?
-        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
-              let d = info as? [String: Any],
-              let ent = d[kSecCodeInfoEntitlementsDict as String] as? [String: Any],
-              let groups = ent["com.apple.security.application-groups"] as? [String]
-        else { return [] }
-        return groups.map { $0.lowercased() }
-    }
-}
-
-enum ProcessList {
-    /// Stands for the processes when they can't be listed: doubt counts as running (S5).
-    static let unknown = "a process App Monitor couldn't check"
-
-    /// Names of processes (any user's, as far as macOS shows them) whose executable is inside `folder`.
-    static func inside(_ folder: String) -> [String] {
-        let prefix = folder.lowercased() + "/"
-        let n = proc_listallpids(nil, 0)
-        guard n > 0 else { return [unknown] }
-        var pids = [Int32](repeating: 0, count: Int(n) + 64)
-        let got = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
-        guard got > 0 else { return [unknown] }
-        var out: [String] = []
-        var buf = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-        for pid in pids.prefix(Int(got)) where pid > 0 {
-            guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { continue }
-            let p = String(cString: buf)
-            if p.lowercased().hasPrefix(prefix) { out.append(URL(fileURLWithPath: p).lastPathComponent) }
-        }
-        return Array(Set(out)).sorted()
     }
 }
