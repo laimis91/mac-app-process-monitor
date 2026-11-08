@@ -212,7 +212,7 @@ git tag v1.2.0
 git push origin v1.2.0
 ```
 
-Local builds use version 1.2.1 unless `APPMON_VERSION` is set.
+Local builds use version 1.2.2 unless `APPMON_VERSION` is set.
 
 ## Signing
 
