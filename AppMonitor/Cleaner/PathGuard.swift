@@ -94,12 +94,12 @@ struct PathGuard {
     /// Returns nil when `path` may be acted on under `allowRoot`, otherwise the reason it may not.
     /// Only the parent folder is resolved; the item itself is judged where it sits (S12).
     /// The app roots take only app bundles the uninstaller picked (`appBundle`), and those take
-    /// nothing else.
+    /// nothing else. An app bundle that comes with macOS (com.apple.*) is refused here too.
     func check(_ path: String, allowRoot: String, appBundle: Bool = false) -> String? {
-        let item: [String]
+        let item: [String], st: stat
         switch Self.locate(path) {
         case .failure(let r): return r.reason
-        case .success(let l): item = l.item
+        case .success(let l): item = l.item; st = l.st
         }
         for e in denyExact where item == e { return "Protected folder" }
         for e in deny where Self.within(item, e.path) && !e.except.contains(where: { Self.within(item, $0) }) {
@@ -115,6 +115,20 @@ struct PathGuard {
         guard Self.strictlyInside(item, rootC) else { return "Outside its rule's folder" }
         // Only the folders between the app root and the bundle: none may be a bundle itself.
         if appBundle, item[rootC.count..<(item.count - 1)].contains(where: Self.isBundleName) { return "Part of another app" }
+        if appBundle, let why = Self.appBundleRefusal(path, st) { return why }
+        return nil
+    }
+
+    /// Apps that come with macOS are never moved, wherever they sit: the bundle must be a real
+    /// folder (not a link) whose own Info.plist names a bundle ID outside com.apple. An ID that
+    /// can't be read refuses the bundle (S5).
+    static func appBundleRefusal(_ path: String, _ st: stat) -> String? {
+        guard (st.st_mode & S_IFMT) == S_IFDIR else { return "Not an app" }
+        var cst = stat()
+        guard lstat(path + "/Contents", &cst) == 0, (cst.st_mode & S_IFMT) == S_IFDIR,
+              let id = AppInventory.infoPlist(path)?["CFBundleIdentifier"] as? String, !id.isEmpty
+        else { return "The app's bundle ID can't be read" }
+        if id.lowercased().hasPrefix("com.apple.") { return "Apps that come with macOS can't be removed" }
         return nil
     }
 }

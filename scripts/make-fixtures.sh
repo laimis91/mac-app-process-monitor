@@ -3,6 +3,8 @@
 # Everything is fake: made-up apps, folders and files under /private/tmp/appmon-fixture-*.
 set -euo pipefail
 ROOT="$(mktemp -d /private/tmp/appmon-fixture-XXXXXX)"
+FINISHED=""   # set just before printing the path; on any earlier exit the half-built tree is removed
+trap 'rc=$?; [ -n "$FINISHED" ] || { chmod -R u+rwx "$ROOT" 2>/dev/null || true; rm -rf "$ROOT"; }; exit $rc' EXIT
 H="$ROOT/home"
 OLD=202001010000   # 1 Jan 2020: older than every age limit
 
@@ -78,7 +80,7 @@ if [ "${1:-}" = "--uninstall" ]; then
   app "$A/Twin.app" com.fixture.twin "Twin"; mkdir -p "$A/Twin.app/Contents/MacOS"
   app "$H/Applications/Twin.app" com.fixture.twin "Twin"; mkdir -p "$H/Applications/Twin.app/Contents/MacOS"
   file "$L/Caches/com.fixture.twin/x" 4096
-  echo "$ROOT"
+  FINISHED=1; echo "$ROOT"
   exit 0
 fi
 
@@ -212,4 +214,4 @@ find "$ROOT" -exec touch -h -t "$OLD" {} +
 touch "$H/Library/Logs/Fresh/new.log" "$H/Library/Logs/Fresh" "$H/Library/Logs/DiagnosticReports/New.ips" \
       "$ROOT/tmp/new-item/x" "$ROOT/tmp/new-item" "$L/Preferences/org.newvendor.tool.plist"
 chmod 000 "$C/com.fixture.locked/closed"
-echo "$ROOT"
+FINISHED=1; echo "$ROOT"

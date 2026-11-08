@@ -154,7 +154,7 @@ enum Rules {
                 reason = "Cache folder “\(n)”. Its app can't be identified by name, so check it first."
             }
             var item = CleanItem(path: p, name: n, size: m.size, newest: m.newest, risk: risk, method: .trash,
-                                 reason: reason, allowRoot: root, fileID: m.fileID, owners: owners,
+                                 reason: reason, scope: .rule(root: root), fileID: m.fileID, owners: owners,
                                  checkOpenFiles: true)
             item.ownerNames = k.kind == .name ? [n] : []
             item.runningOwner = blockedBy(owners, names: item.ownerNames, ctx)
@@ -173,7 +173,7 @@ enum Rules {
             let k = CandidateKey.parse(n)
             let owners = k.kind == .bundleID ? [k.key] : []
             var item = CleanItem(path: p, name: n, size: m.size, newest: m.newest, risk: .safe, method: .trash,
-                                 reason: "Log files, \(ageText(d, limit)).", allowRoot: root, fileID: m.fileID,
+                                 reason: "Log files, \(ageText(d, limit)).", scope: .rule(root: root), fileID: m.fileID,
                                  owners: owners, ageLimitDays: limit)
             item.runningOwner = blockedBy(owners, ctx)
             return item
@@ -186,7 +186,7 @@ enum Rules {
         let r = children(ctx, root, want: { _, st in (st.st_mode & S_IFMT) == S_IFREG }) { n, p, m, _ in
             guard let d = aged(m, limit, ctx) else { return nil }
             return CleanItem(path: p, name: n, size: m.size, newest: m.newest, risk: .safe, method: .trash,
-                             reason: "Crash report, \(ageText(d, limit)).", allowRoot: ctx.roots.h("Library/Logs"), fileID: m.fileID,
+                             reason: "Crash report, \(ageText(d, limit)).", scope: .rule(root: ctx.roots.h("Library/Logs")), fileID: m.fileID,
                              ageLimitDays: limit)
         }
         return appCategory("J-CRASH", "Crash reports", .general, "Reports saved when an app crashed.", r)
@@ -200,7 +200,7 @@ enum Rules {
             guard let d = aged(m, limit, ctx) else { return nil }
             return CleanItem(path: p, name: n, size: m.size, newest: m.newest, risk: .review, method: .trash,
                              reason: "Temporary item, \(ageText(d, limit)). Moved only if no app has it open.",
-                             allowRoot: root, fileID: m.fileID, ageLimitDays: limit, checkOpenFiles: true)
+                             scope: .rule(root: root), fileID: m.fileID, ageLimitDays: limit, checkOpenFiles: true)
         }
         return appCategory("J-TMP", "Old temporary files", .general,
                            "Files apps left in your temporary folder.", r)
@@ -219,7 +219,7 @@ enum Rules {
                 guard let d = aged(m, limit, ctx) else { return nil }
                 var item = CleanItem(path: p, name: n, size: m.size, newest: m.newest, risk: .review, method: .trash,
                                      reason: "Attachment Mail saved for opening, \(ageText(d, limit)). The original stays in the email.",
-                                     allowRoot: allow, fileID: m.fileID, owners: ["com.apple.mail"], ageLimitDays: limit)
+                                     scope: .rule(root: allow), fileID: m.fileID, owners: ["com.apple.mail"], ageLimitDays: limit)
                 item.runningOwner = blockedBy(["com.apple.mail"], ctx)
                 return item
             }) else { continue }
@@ -247,7 +247,7 @@ enum Rules {
             }
             return CleanItem(path: p, name: device, size: m.size, newest: m.newest, risk: .info, method: .none,
                              reason: "Backup of \(device)\(when). Delete it in Finder → your device → Manage Backups.",
-                             allowRoot: root, fileID: m.fileID)
+                             scope: .none, fileID: m.fileID)
         }
         return appCategory("J-IOSBK", "iPhone and iPad backups", .general,
                            "Shown for information. Manage them in Finder.", r, method: .none)
@@ -264,7 +264,7 @@ enum Rules {
             let m = ScanEngine.measure(p, links: ctx.links, cancel: ctx.cancel)
             let item = CleanItem(path: p, name: "Trash", size: m.size, newest: m.newest, risk: .info, method: .none,
                                  reason: "Items already in the Trash. Empty it in Finder to free this space.",
-                                 allowRoot: ctx.roots.home, fileID: m.fileID)
+                                 scope: .none, fileID: m.fileID)
             return Category(id: "J-TRASH", title: "Trash", group: .general, method: .none,
                             explanation: "Empty the Trash in Finder to free this space.", items: [item])
         }
@@ -279,7 +279,7 @@ enum Rules {
         let r = children(ctx, root) { n, p, m, _ in
             var item = CleanItem(path: p, name: n, size: m.size, newest: m.newest, risk: .safe, method: .trash,
                                  reason: "Xcode build data. Xcode rebuilds it on the next build.",
-                                 allowRoot: root, fileID: m.fileID, owners: [xcode], checkOpenFiles: true)
+                                 scope: .rule(root: root), fileID: m.fileID, owners: [xcode], checkOpenFiles: true)
             item.runningOwner = blockedBy([xcode], ctx)
             return item
         }
@@ -288,17 +288,17 @@ enum Rules {
 
     static func deviceSupport(_ ctx: ScanContext) -> Category? {
         let root = ctx.roots.h("Library/Developer/Xcode/iOS DeviceSupport")
-        guard case .ok(let names) = ScanEngine.children(root) else {
-            if case .noAccess(let e) = ScanEngine.children(root) {
-                return appCategory("J-XC-DS", "Old device support", .developer, "", ([], noticeFor(e)))
-            }
-            return nil
+        let names: [String]
+        switch ScanEngine.children(root) {
+        case .missing: return nil
+        case .noAccess(let e): return appCategory("J-XC-DS", "Old device support", .developer, "", ([], noticeFor(e)))
+        case .ok(let n): names = n
         }
         let old = Set(Versions.oldDeviceSupport(names))
         let r = children(ctx, root, want: { n, _ in old.contains(n) }) { n, p, m, _ in
             var item = CleanItem(path: p, name: n, size: m.size, newest: m.newest, risk: .review, method: .trash,
                                  reason: "Debug symbols for an older iOS version. The 2 newest versions are kept; Xcode copies them again when that device connects.",
-                                 allowRoot: root, fileID: m.fileID, owners: [xcode])
+                                 scope: .rule(root: root), fileID: m.fileID, owners: [xcode])
             item.runningOwner = blockedBy([xcode], ctx)
             return item
         }
@@ -310,7 +310,7 @@ enum Rules {
         let r = children(ctx, root, want: { n, _ in n.lowercased().hasPrefix("com.unity3d.") }) { n, p, m, _ in
             var item = CleanItem(path: p, name: n, size: m.size, newest: m.newest, risk: .review, method: .trash,
                                  reason: "Unity cache. Unity re-creates it, which can make the next start slower.",
-                                 allowRoot: root, fileID: m.fileID, owners: ["com.unity3d"], checkOpenFiles: true)
+                                 scope: .rule(root: root), fileID: m.fileID, owners: ["com.unity3d"], checkOpenFiles: true)
             item.runningOwner = blockedBy(["com.unity3d"], ctx)
             return item
         }
@@ -323,7 +323,7 @@ enum Rules {
         guard ScanEngine.lstatInfo(p) != nil else { return nil }
         let m = ScanEngine.measure(p, links: ctx.links, cancel: ctx.cancel)
         let item = CleanItem(path: p, name: "Unity/upm", size: m.size, newest: m.newest, risk: .info, method: .none,
-                             reason: "Unity's package cache manages its own size.", allowRoot: "", fileID: m.fileID)
+                             reason: "Unity's package cache manages its own size.", scope: .none, fileID: m.fileID)
         return Category(id: "J-UNITY-UPM", title: "Unity package cache", group: .developer, method: .none,
                         explanation: "Shown for information.", items: [item])
     }
@@ -333,7 +333,7 @@ enum Rules {
         let r = children(ctx, root, needsWrite: false, want: { n, _ in devCacheDirs.contains(n) }) { n, p, m, _ in
             return CleanItem(path: p, name: n, size: m.size, newest: m.newest, risk: .info, method: .none,
                              reason: "Cleaned only with the tool's own command (see its row, when the tool is installed).",
-                             allowRoot: "", fileID: m.fileID)
+                             scope: .none, fileID: m.fileID)
         }
         guard let r, !r.items.isEmpty else { return nil }
         return appCategory("J-DEVCACHE-DIRS", "Tool cache folders", .developer,
@@ -386,7 +386,6 @@ enum Rules {
         var measurePath: String? = nil
         var m = Measure()
         var sizeUnknown = false
-        let running: String? = nil
         if t.id == "J-DOCKER" {
             // Needs a running Docker; there is no folder to measure.
             guard ToolRunner.run(exe, ["info"], timeout: 8).status == 0 else { return nil }
@@ -398,10 +397,9 @@ enum Rules {
             m = ScanEngine.measure(dir, links: ctx.links, cancel: ctx.cancel)
         }
         var item = CleanItem(path: path, name: t.title, size: m.size, newest: m.newest, risk: t.risk, method: .tool,
-                             reason: t.explanation, allowRoot: "", fileID: m.fileID)
+                             reason: t.explanation, scope: .none, fileID: m.fileID)
         item.sizeUnknown = sizeUnknown
         item.measurePath = measurePath
-        item.runningOwner = running
         var cmd = ToolCommand(tool: t.tool, commands: t.commands, preview: t.preview)
         cmd.executable = exe
         return Category(id: t.id, title: t.title, group: .developer, method: .tool, explanation: t.explanation,
@@ -419,7 +417,7 @@ enum Rules {
         var item = CleanItem(path: "tool://J-XC-SIM", name: "Unavailable simulators", size: 0, newest: nil,
                              risk: .review, method: .tool,
                              reason: "\(unavailable) simulator\(unavailable == 1 ? "" : "s") for runtimes no longer installed. Deletes those simulators' data too.",
-                             allowRoot: "", fileID: [], owners: [xcode])
+                             scope: .none, fileID: [], owners: [xcode])
         item.sizeUnknown = true
         item.runningOwner = blockedBy([xcode], ctx) ?? (booted ? "A booted simulator" : nil)
         var cmd = ToolCommand(tool: "xcrun", commands: [["simctl", "delete", "unavailable"]], preview: nil)

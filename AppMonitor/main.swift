@@ -8,19 +8,13 @@ import IOKit
 
 // MARK: - Raw data
 
-struct RawProc {
-    let pid: Int32
-    let ppid: Int32
-    let cpu: Double
-    let rssKB: Int
-    let exe: String
-    var args: String = ""
-}
+// RawProc, the .app path helpers and the ownership logic live in ProcessTree.swift.
 
 func runPS(_ format: String) -> String {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/bin/ps")
     p.arguments = ["-axww", "-o", format]
+    p.environment = ["LC_ALL": "C", "PATH": "/usr/bin:/bin"]   // fixed lstart format, whatever the user's locale
     let pipe = Pipe()
     p.standardOutput = pipe
     p.standardError = FileHandle.nullDevice
@@ -43,28 +37,23 @@ func fields(_ line: Substring, _ n: Int) -> ([Substring], String)? {
 }
 
 func readProcs() -> [Int32: RawProc] {
+    // comm and args both run to the end of the line, so they need two ps calls. The start time
+    // (lstart, five fields) ties the args to the same process: a reused pid has another one.
     var procs: [Int32: RawProc] = [:]
-    for line in runPS("pid=,ppid=,pcpu=,rss=,comm=").split(separator: "\n") {
-        guard let (f, exe) = fields(line, 4),
+    var started: [Int32: String] = [:]
+    for line in runPS("pid=,ppid=,pcpu=,rss=,lstart=,comm=").split(separator: "\n") {
+        guard let (f, exe) = fields(line, 9),
               let pid = Int32(f[0]), let ppid = Int32(f[1]),
               let cpu = Double(f[2]), let rss = Int(f[3]) else { continue }
         procs[pid] = RawProc(pid: pid, ppid: ppid, cpu: cpu, rssKB: rss, exe: exe)
+        started[pid] = f[4...8].joined(separator: " ")
     }
-    for line in runPS("pid=,args=").split(separator: "\n") {
-        guard let (f, args) = fields(line, 1), let pid = Int32(f[0]) else { continue }
+    for line in runPS("pid=,lstart=,args=").split(separator: "\n") {
+        guard let (f, args) = fields(line, 6), let pid = Int32(f[0]),
+              started[pid] == f[1...5].joined(separator: " ") else { continue }
         procs[pid]?.args = args
     }
     return procs
-}
-
-func outerAppPath(_ exe: String) -> String? {
-    guard let r = exe.range(of: ".app/") else { return nil }
-    return String(exe[..<r.lowerBound]) + ".app"
-}
-
-func innerAppPath(_ exe: String) -> String? {
-    guard let r = exe.range(of: ".app/", options: .backwards) else { return nil }
-    return String(exe[..<r.lowerBound]) + ".app"
 }
 
 /// Helper bundles inside an app often have no icon; then the outer app's icon is more useful.
@@ -75,11 +64,6 @@ func hasOwnIcon(_ appPath: String) -> Bool {
     let v = info?["CFBundleIconFile"] != nil || info?["CFBundleIconName"] != nil
     iconCheck[appPath] = v
     return v
-}
-
-func baseName(_ path: String) -> String {
-    let s = (path as NSString).lastPathComponent
-    return s.isEmpty ? path : s
 }
 
 func appName(_ appPath: String) -> String {
@@ -112,6 +96,9 @@ final class Node: Identifiable {
     var ownRSS: Int
     var extraCount = 0
     var pid: Int32 = 0          // process pid, or the app's main pid for a group (0 = none)
+    var identity: ProcIdentity? // pid's parent and start time when sampled; nil = never signal it
+    var command = ""            // full command line, for search
+    var appBundle: String?      // a group's .app bundle
     var ownGPU = 0.0
     var gpu = 0.0
     var kids: [Node] = []
@@ -130,7 +117,9 @@ final class Node: Identifiable {
     }
 
     func matches(_ q: String) -> Bool {
-        title.localizedCaseInsensitiveContains(q) || kids.contains { $0.matches(q) }
+        let folder = subtitle.map { $0.hasPrefix("in ") ? String($0.dropFirst(3)) : $0 } ?? ""
+        return title.localizedCaseInsensitiveContains(q) || folder.localizedCaseInsensitiveContains(q)
+            || command.localizedCaseInsensitiveContains(q) || kids.contains { $0.matches(q) }
     }
 }
 
@@ -138,32 +127,12 @@ func buildGroups(gpu: [Int32: Double] = [:]) -> [Node] {
     let procs = readProcs()
     // Owner of each process: the outermost .app among its ancestors, otherwise the
     // top-level process (the one launchd started).
-    var cache: [Int32: (key: String, isApp: Bool)] = [:]
-    func owner(_ pid: Int32) -> (key: String, isApp: Bool) {
-        if let c = cache[pid] { return c }
-        var chain: [Int32] = []
-        var found: (key: String, isApp: Bool)?
-        var cur = pid
-        while cur > 1, let p = procs[cur] {
-            if let c = cache[cur] {
-                if c.isApp || found == nil { found = c }
-                break
-            }
-            chain.append(cur)
-            if let a = outerAppPath(p.exe) { found = (a, true) }
-            cur = p.ppid
-        }
-        let top = chain.last ?? pid
-        let result = found ?? (baseName(procs[top]?.exe ?? "?"), false)
-        for c in chain { cache[c] = result }
-        cache[pid] = result
-        return result
-    }
+    let owners = processOwners(procs)
 
     var members: [String: [Int32]] = [:]
     var groupIsApp: [String: Bool] = [:]
     for pid in procs.keys {
-        let o = owner(pid)
+        guard let o = owners[pid] else { continue }
         members[o.key, default: []].append(pid)
         groupIsApp[o.key] = o.isApp
     }
@@ -178,6 +147,7 @@ func buildGroups(gpu: [Int32: Double] = [:]) -> [Node] {
         let isApp = groupIsApp[key] ?? false
         let group = Node(id: "g:" + key, title: isApp ? appName(key) : key, subtitle: nil,
                          tooltip: key, iconPath: isApp ? key : nil, isGroup: true, ownCPU: 0, ownRSS: 0)
+        group.appBundle = isApp ? key : nil
         let set = Set(pids)
         var nodes: [Int32: Node] = [:]
         for pid in pids {
@@ -200,6 +170,8 @@ func buildGroups(gpu: [Int32: Double] = [:]) -> [Node] {
                               tooltip: "PID \(pid)\n\(p.args.isEmpty ? p.exe : p.args)",
                               iconPath: inApp.map { hasOwnIcon($0) ? $0 : (outerAppPath(p.exe) ?? $0) }, isGroup: false, ownCPU: p.cpu, ownRSS: p.rssKB)
             nodes[pid]?.pid = pid
+            nodes[pid]?.identity = procIdentity(pid)
+            nodes[pid]?.command = p.args.isEmpty ? p.exe : p.args
             nodes[pid]?.ownGPU = gpu[pid] ?? 0
         }
         for pid in pids {
@@ -214,7 +186,8 @@ func buildGroups(gpu: [Int32: Double] = [:]) -> [Node] {
             let root = group.kids.remove(at: i)
             group.kids += root.kids
             group.ownCPU = root.ownCPU; group.ownRSS = root.ownRSS; group.extraCount = 1
-            group.ownGPU = root.ownGPU; group.pid = root.pid
+            group.ownGPU = root.ownGPU; group.pid = root.pid; group.identity = root.identity
+            group.command = root.command
         }
         groups.append(group.sum())
     }
@@ -242,7 +215,7 @@ func readMem() -> MemInfo {
     }
     if kr == KERN_SUCCESS {
         let page = Double(getpagesize())
-        m.app = Double(Int64(s.internal_page_count) - Int64(s.purgeable_count)) * page
+        m.app = max(0, Double(Int64(s.internal_page_count) - Int64(s.purgeable_count)) * page)
         m.wired = Double(s.wire_count) * page
         m.compressed = Double(s.compressor_page_count) * page
         m.cached = Double(UInt64(s.external_page_count) + UInt64(s.purgeable_count)) * page
@@ -256,8 +229,6 @@ func readMem() -> MemInfo {
     if sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nil, 0) == 0 { m.pressure = level }
     return m
 }
-
-// MARK: - Sampler
 
 // MARK: - GPU
 
@@ -340,9 +311,40 @@ final class Sampler: ObservableObject {
             (cpuHistory, gpuHistory, memHistory) = Demo.history(Sampler.historyLength)
         }
         refresh()
+        startTimer()
+        // Sample only while a window is on screen: closing the window keeps the app running, so a
+        // hidden, minimised, closed or fully covered window stops sampling until it shows again.
+        let nc = NotificationCenter.default
+        for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.willCloseNotification,
+                     NSWindow.didBecomeKeyNotification, NSWindow.didMiniaturizeNotification,
+                     NSWindow.didDeminiaturizeNotification, NSApplication.didHideNotification,
+                     NSApplication.didUnhideNotification, NSApplication.didChangeOcclusionStateNotification] {
+            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                // After the notification, so a closing window no longer counts as visible.
+                DispatchQueue.main.async { self?.updateVisibility() }
+            })
+        }
+        // A window that opens already covered (or on a locked screen) may post nothing: check once.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.updateVisibility() }
+    }
+
+    private var observers: [NSObjectProtocol] = []
+
+    private func startTimer() {
+        timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             guard let self, !self.paused else { return }
             self.refresh()
+        }
+    }
+
+    private func updateVisibility() {
+        let visible = NSApp.windows.contains { $0.isVisible && $0.occlusionState.contains(.visible) }
+        if visible, timer == nil {
+            startTimer()
+            if !paused { refresh() }   // show fresh numbers straight away
+        } else if !visible, let t = timer {
+            t.invalidate(); timer = nil
         }
     }
 

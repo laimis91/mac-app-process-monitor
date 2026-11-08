@@ -12,8 +12,17 @@ enum CategoryGroup: String, Codable {
 }
 enum FDAStatus: String, Codable { case granted, denied, unknown }
 
+/// Which guard checks an item right before it is acted on (6.4, S13a). One value per item, so
+/// no item can be both a Space-map pick and an app bundle, or carry an empty rule root.
+enum GuardScope: Equatable {
+    case rule(root: String)         // a junk, leftover or uninstaller item: the rule root it must stay inside
+    case appBundle(root: String)    // the app bundle itself (uninstaller): the app root it sits in
+    case spaceMap                   // picked in the Space map: the Space-map guard
+    case none                       // tool and info rows: nothing may be moved through the guard
+}
+
 /// One thing the user can clean, or a row shown for information.
-struct CleanItem: Identifiable, Codable {
+struct CleanItem: Identifiable {
     var id: String { path }
     let path: String                // canonical, as produced by the scanner
     let name: String
@@ -22,7 +31,7 @@ struct CleanItem: Identifiable, Codable {
     let risk: Risk
     let method: Method
     let reason: String
-    let allowRoot: String           // the rule root this item must stay inside (path guard)
+    let scope: GuardScope           // the guard that checks it at action time
     let fileID: [UInt64]            // [device, inode] at scan time
     var owners: [String] = []       // bundle IDs whose running app blocks this item (S7)
     var ownerNames: [String] = []   // app names, for caches named by app name
@@ -32,11 +41,14 @@ struct CleanItem: Identifiable, Codable {
     var note: String? = nil         // shown greyed, e.g. "Needs Full Disk Access"
     var sizeUnknown = false         // tool rows with nothing to measure
     var measurePath: String? = nil  // tool rows: the cache folder measured before and after
-    var spaceMap = false            // picked in the Space map: checked by the Space-map guard (6.4)
     var inspect = false             // re-checked for always-protected contents (an app inside, …) when cleaned
     var preselect = false           // uninstaller Review rows the user asked for by naming the app (spec 10)
-    var appBundle = false           // the app bundle itself (uninstaller): checked against the app roots (6.4)
     var insideBundle: String? = nil // uninstaller: skipped while any process runs from inside this bundle
+
+    /// Picked in the Space map: checked by the Space-map guard (6.4).
+    var spaceMap: Bool { scope == .spaceMap }
+    /// The app bundle itself (uninstaller): checked against the app roots (6.4).
+    var appBundle: Bool { if case .appBundle = scope { return true }; return false }
 
     var selectable: Bool { risk != .info && note == nil }
     /// S6: only Safe and Requested items moved to the Trash are pre-selected, never tool commands.
@@ -47,7 +59,7 @@ struct CleanItem: Identifiable, Codable {
     }
 }
 
-struct ToolCommand: Codable {
+struct ToolCommand {
     let tool: String                // executable name, located at known absolute paths
     let commands: [[String]]        // argument lists, run one after another
     let preview: [String]?          // read-only "what would it do" arguments, shown in the sheet
@@ -55,7 +67,7 @@ struct ToolCommand: Codable {
     var command: [String] { commands.map { ([tool] + $0).joined(separator: " ") } }
 }
 
-struct Category: Identifiable, Codable {
+struct Category: Identifiable {
     let id: String                  // rule ID, e.g. "J-CACHE"
     let title: String
     let group: CategoryGroup

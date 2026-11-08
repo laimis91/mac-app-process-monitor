@@ -111,13 +111,17 @@ enum FinderTrash {
     }
 
     /// Items gone after Finder answered without an error were moved by Finder. If Finder reported
-    /// an error, nothing is counted as moved: an item may have vanished for another reason.
+    /// an item-level error, a vanished item counts as moved only if the same file (device and
+    /// inode from before the move) is in the user's Trash, and without Put Back, since it can't be
+    /// told whether Finder moved it. Otherwise it stays failed with "check the Trash".
     /// Errors that hit the whole request rather than one item: no point retrying item by item.
     /// (-1728 "no such object" is left out: it usually means one item vanished.)
     static let wholeRequest: Set<Int32> = [-1712, -128, -600, -609, -1743, -1744, -1708, -10661]
 
     static func move(_ paths: [String]) -> [String: TrashResult] {
+        let before = Dictionary(paths.map { ($0, ScanEngine.fileID($0) ?? []) }, uniquingKeysWith: { a, _ in a })
         let code = send(paths)
+        let trash = Roots.canonical(NSHomeDirectory()) + "/.Trash"
         var r: [String: TrashResult] = [:]
         for p in paths {
             let gone = ScanEngine.lstatInfo(p) == nil
@@ -126,7 +130,11 @@ enum FinderTrash {
                     : "Finder couldn't be used (error \(c))"
                 r[p] = .failedAll(gone ? why + "; check the Trash" : why)
             } else if let c = code {
-                r[p] = .failed(gone ? "Finder reported error \(c); check the Trash" : "Finder couldn't move it (error \(c))")
+                if gone, TrashLookup.found(URL(fileURLWithPath: p).lastPathComponent, fileID: before[p] ?? [], trash: trash) {
+                    r[p] = .movedDespiteError
+                } else {
+                    r[p] = .failed(gone ? "Finder reported error \(c); check the Trash" : "Finder couldn't move it (error \(c))")
+                }
             } else {
                 r[p] = gone ? .moved(putBack: true) : .failed("Finder didn't move it")
             }

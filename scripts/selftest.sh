@@ -7,7 +7,8 @@ OUT="$(mktemp -d)"
 trap 'rc=$?; rm -rf "$OUT"; exit $rc' EXIT
 swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" \
   "$C/Model.swift" "$C/PathGuard.swift" "$C/Keys.swift" "$C/ScanEngine.swift" "$C/InstalledApps.swift" \
-  "$C/Rules.swift" "$C/Actions.swift" "$C/Permissions.swift" "$C/SpaceMap.swift" \
+  "$C/Rules.swift" "$C/Actions.swift" "$C/Probes.swift" "$C/Permissions.swift" "$C/SpaceMap.swift" \
+  "$C/SpaceGuard.swift" \
   "$C/LeftoverMatcher.swift" "$C/Leftovers.swift" "$C/Uninstaller.swift" \
   "$ROOT/scripts/selftest/SelfTest.swift" -o "$OUT/selftest"
 "$OUT/selftest"

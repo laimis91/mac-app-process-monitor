@@ -14,11 +14,14 @@ if [ "${APPMON_RELEASE:-}" = "1" ] && [ -z "${APPMON_SIGN_IDENTITY:-}" ]; then
 fi
 APP="${APPMON_OUT:-App Monitor.app}"   # APPMON_OUT: build somewhere else (fixture tests)
 SOURCES=(main.swift Views.swift Demo.swift CleanerModel.swift CleanerViews.swift
+         DiskTabView.swift ResultRows.swift UninstallerViews.swift DiskPanels.swift CleanerSheets.swift SettingsView.swift
          Cleaner/Model.swift Cleaner/PathGuard.swift Cleaner/Keys.swift Cleaner/ScanEngine.swift
-         Cleaner/InstalledApps.swift Cleaner/Rules.swift Cleaner/Actions.swift Cleaner/Permissions.swift
-         Cleaner/SystemProbes.swift Cleaner/Headless.swift Cleaner/SpaceMap.swift
+         Cleaner/InstalledApps.swift Cleaner/Rules.swift Cleaner/Actions.swift Cleaner/Probes.swift
+         Cleaner/Permissions.swift Cleaner/SystemProbes.swift Cleaner/Headless.swift Cleaner/SpaceMap.swift
+         Cleaner/SpaceGuard.swift
          Cleaner/LeftoverMatcher.swift Cleaner/Leftovers.swift Cleaner/Uninstaller.swift
          SpaceMapModel.swift SpaceMapViews.swift)
+SOURCES+=(ProcessTree.swift)   # process ownership, also compiled by scripts/grouping-test.sh
 # APPMON_DEBUG=1 compiles in the developer switches (fixture roots, headless scan). Release builds never set it.
 FLAGS=(-O)
 [ "${APPMON_DEBUG:-}" = "1" ] && FLAGS+=(-D APPMON_DEBUG)

@@ -29,8 +29,7 @@ struct Measure {
     var newest: Date? = nil          // nil when more than `ageCap` entries were seen
     var entries = 0
     var complete = true              // false if part of it couldn't be read
-    var fileID: [UInt64] = []
-    var cancelled = false
+    var fileID: [UInt64] = []        // a stopped (cancelled) measure is not complete either
     var special = false              // contains a socket or FIFO (may be in use without an open file)
     var locked = false               // contains a locked file (Finder would stop to ask about it)
     var protected: String? = nil     // with `inspect`: the first always-protected thing inside (6.4)
@@ -93,14 +92,33 @@ enum ScanEngine {
     /// to look at it (S11).
     static func measure(_ path: String, links: LinkSet?, cancel: CancelFlag? = nil, inspect: Bool = false,
                         synced: ((String) -> Bool)? = nil, strictApps: Bool = false) -> Measure {
-        var m = Measure()
-        let prevPolicy = inspect ? getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD) : -1
-        if inspect {
-            _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
-        }
+        guard inspect else { return walk(path, links: links, cancel: cancel, inspect: false, synced: synced, strictApps: strictApps) }
+        return withoutDownloads { walk(path, links: links, cancel: cancel, inspect: true, synced: synced, strictApps: strictApps) }
+    }
+
+    /// Runs `body` with dataless (cloud-only) files reported instead of downloaded on this
+    /// thread (S11), then restores the thread's previous policy.
+    static func withoutDownloads<T>(_ body: () -> T) -> T {
+        let prev = getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD)
+        _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
         defer {
-            if prevPolicy >= 0 { _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, prevPolicy) }
+            if prev >= 0 { _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, prev) }
         }
+        return body()
+    }
+
+    /// fts_read with errno cleared first. When it returns nil, `err` is errno: 0 at the end of
+    /// the walk, otherwise the error that stopped it.
+    static func ftsNext(_ fts: UnsafeMutablePointer<FTS>, _ err: inout Int32) -> UnsafeMutablePointer<FTSENT>? {
+        errno = 0
+        let e = fts_read(fts)
+        err = e == nil ? errno : 0
+        return e
+    }
+
+    private static func walk(_ path: String, links: LinkSet?, cancel: CancelFlag?, inspect: Bool,
+                             synced: ((String) -> Bool)?, strictApps: Bool) -> Measure {
+        var m = Measure()
         guard let id = fileID(path) else { m.complete = false; return m }
         m.fileID = id
         var newest: Date? = nil
@@ -113,8 +131,10 @@ enum ScanEngine {
         defer { fts_close(fts) }
         let uid = getuid()
         var rootDev: Int32? = nil
-        while let e = fts_read(fts) {
-            if m.entries & 1023 == 0, cancel?.isSet == true { m.cancelled = true; break }
+        var stopped = false
+        var readErr: Int32 = 0
+        while let e = ftsNext(fts, &readErr) {
+            if m.entries & 1023 == 0, cancel?.isSet == true { stopped = true; break }
             let info = Int32(e.pointee.fts_info)
             switch info {
             case FTS_DP:
@@ -155,32 +175,36 @@ enum ScanEngine {
             }
             m.size += Int64(st.st_blocks) * 512
         }
+        // Stopped part-way, or fts failed before the end of the walk: not complete (S5).
+        if stopped || readErr != 0 { m.complete = false }
         m.newest = m.entries > ageCap ? nil : newest
         return m
     }
 
-    /// Newest modification date only (S13d re-check). nil if the cap is reached or unreadable.
-    static func newest(_ path: String) -> Date? {
-        measure(path, links: nil).newest
-    }
-
     enum ListResult { case ok([String]), missing, noAccess(Int32) }
 
-    /// Direct children of a folder (names), without following links.
+    /// Direct children of a folder (names, sorted, without .DS_Store), without following links.
     static func children(_ dir: String) -> ListResult {
-        guard let d = opendir(dir) else {
-            return errno == ENOENT || errno == ENOTDIR ? .missing : .noAccess(errno)
+        switch entries(dir) {
+        case .success(let names): return .ok(names.filter { $0 != ".DS_Store" }.sorted())
+        case .failure(let e): return e.code == ENOENT || e.code == ENOTDIR ? .missing : .noAccess(e.code)
         }
+    }
+
+    struct OpenError: Error { let code: Int32 }
+
+    /// Every entry of a folder except "." and "..", in directory order, or opendir's errno.
+    static func entries(_ dir: String) -> Result<[String], OpenError> {
+        guard let d = opendir(dir) else { return .failure(OpenError(code: errno)) }
         defer { closedir(d) }
         var names: [String] = []
         while let e = readdir(d) {
             let name = withUnsafePointer(to: e.pointee.d_name) {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
             }
-            if name == "." || name == ".." || name == ".DS_Store" { continue }
-            names.append(name)
+            if name != "." && name != ".." { names.append(name) }
         }
-        return .ok(names.sorted())
+        return .success(names)
     }
 
     static func lstatInfo(_ path: String) -> stat? {

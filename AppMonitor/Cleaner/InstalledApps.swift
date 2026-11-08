@@ -57,9 +57,15 @@ final class AppInventory {
         }
     }
 
+    /// A bundle's Info.plist: Contents/Info.plist, or with `flat` also a top-level Info.plist
+    /// (bundles without a Contents folder, such as some plug-ins and XPC services).
+    static func infoPlist(_ bundle: String, flat: Bool = false) -> NSDictionary? {
+        NSDictionary(contentsOfFile: bundle + "/Contents/Info.plist")
+            ?? (flat ? NSDictionary(contentsOfFile: bundle + "/Info.plist") : nil)
+    }
+
     static func info(_ bundle: String) -> AppInfo? {
-        let plist = bundle + "/Contents/Info.plist"
-        guard let d = NSDictionary(contentsOfFile: plist),
+        guard let d = infoPlist(bundle),
               let id = d["CFBundleIdentifier"] as? String, !id.isEmpty else { return nil }
         let file = URL(fileURLWithPath: bundle).deletingPathExtension().lastPathComponent
         let name = (d["CFBundleDisplayName"] as? String) ?? (d["CFBundleName"] as? String) ?? file
@@ -82,8 +88,7 @@ final class AppInventory {
             for n in names {
                 if sub == "Frameworks" && !n.lowercased().hasSuffix(".app") { continue }
                 let p = c + "/" + sub + "/" + n
-                if let d = NSDictionary(contentsOfFile: p + "/Contents/Info.plist") ?? NSDictionary(contentsOfFile: p + "/Info.plist"),
-                   let id = d["CFBundleIdentifier"] as? String {
+                if let id = infoPlist(p, flat: true)?["CFBundleIdentifier"] as? String {
                     out.append((id, p))
                 }
             }
@@ -101,7 +106,12 @@ final class AppInventory {
             if best == nil || aid.count > best!.id.count { best = a }
         }
         if let best { return best }
-        for (eid, a) in embedded where BundleIDs.belongs(k, to: eid) { return a }
+        // the same for embedded IDs: the longest matching one, not whichever comes first
+        var bestEmbedded: (id: String, app: AppInfo)?
+        for (eid, a) in embedded where BundleIDs.belongs(k, to: eid) {
+            if bestEmbedded == nil || eid.count > bestEmbedded!.id.count { bestEmbedded = (eid, a) }
+        }
+        if let bestEmbedded { return bestEmbedded.app }
         if let l = lookup, let a = l(id) { return a }
         let base = BundleIDs.base(id)
         if base != id { return owner(of: base) }

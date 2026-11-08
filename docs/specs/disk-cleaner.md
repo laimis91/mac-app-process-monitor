@@ -62,7 +62,7 @@ These rules override any feature behaviour described later.
 | S10 | **Honest sizes.** Reclaimable sizes use allocated size with hard links counted once. Totals are labelled as estimates where APFS clones or snapshots can make the real gain smaller (section 6.2). |
 | S11 | **No network, minimal storage.** The cleaner sends nothing anywhere. Rule data is bundled in the app. Only settings (age limits, section 4.6) and the user's ignore list are stored, in `UserDefaults`. Scan results are never stored. |
 | S12 | **Symlinks.** Scans MUST NOT follow symbolic links or cross onto another volume. A selected item that is a symlink is moved to the Trash as the link itself, never its target. An item whose *parent chain* contains a symlink is dropped. |
-| S13 | **Re-check at action time.** Immediately before acting on each item, re-check: (a) the path guard (6.4), (b) the owning app is not running, (c) no file inside is open (temp and cache items only), checked against one open-file snapshot taken per Clean: for each process of the current user, its open files (`PROC_PIDLISTFDS` + `PROC_PIDFDVNODEPATHINFO`), working directory and memory-mapped files, matched by path prefix. If the snapshot can't be taken, those items are skipped (S5). Processes of root and other users are not visible, which is an accepted limit, (d) the newest modification date still meets the rule's age limit, (e) the item's `fileResourceIdentifier` is unchanged since the scan. Any failed check skips the item with its reason. The checks run again after the user uses a [Quit] button. |
+| S13 | **Re-check at action time.** Immediately before acting on each item, re-check: (a) the path guard (6.4), (b) the owning app is not running, (c) no file inside is open (temp and cache items only), checked against one open-file snapshot taken per Clean: for each process of the current user, its open files (`PROC_PIDLISTFDS` + `PROC_PIDFDVNODEPATHINFO`), working directory and memory-mapped files, matched by path prefix. If the snapshot can't be taken, those items are skipped (S5). Processes of root and other users are not visible, which is an accepted limit, (d) the newest modification date still meets the rule's age limit, (e) the item's identity, its `lstat` (`st_dev`, `st_ino`) pair, is unchanged since the scan. Any failed check skips the item with its reason. The checks run again after the user uses a [Quit] button. |
 | S14 | **Most specific rule wins.** Each path belongs to exactly one rule. A general rule (for example "children of `~/Library/Caches`") excludes every path claimed by a more specific rule, **and every parent folder of such a path** (so `Caches/Unity` is never offered when `Caches/Unity/upm` is claimed). |
 
 ---
@@ -249,15 +249,17 @@ Integration with the existing code:
 
 ### 6.2 Size measurement
 
-- Enumerate with `FileManager.enumerator(at:includingPropertiesForKeys:options:)`, prefetching
-  `totalFileAllocatedSizeKey`, `isDirectoryKey`, `isSymbolicLinkKey`, `fileResourceIdentifierKey`,
-  `contentModificationDateKey` and `volumeIdentifierKey`.
-- Use **allocated** size (`totalFileAllocatedSizeKey`), never the logical `fileSize`.
-- Count hard links once, using `fileResourceIdentifierKey` within one scan.
-- Stop at volume boundaries: skip a child whose `volumeIdentifierKey` differs from the scan root's.
+- Enumerate with `fts(3)` (`FTS_PHYSICAL | FTS_XDEV | FTS_NOCHDIR`), which gives each entry's
+  `lstat` without following symbolic links. An entry fts can't read, or an fts error that ends
+  the walk early, makes the measurement incomplete (S5).
+- Use **allocated** size (`st_blocks` × 512, as `du` reports it), never the logical `st_size`.
+- Count hard links once: a file with more than one link counts the first time its
+  (`st_dev`, `st_ino`) pair is seen within one scan.
+- Stop at volume boundaries: fts doesn't cross them, and an entry whose `st_dev` differs from the
+  scan root's is not entered.
 - APFS clones can't be detected through public API. Totals are labelled "up to X". The UI
   MUST NOT promise an exact gain.
-- A folder's age is the newest `contentModificationDate` of anything inside it, capped at
+- A folder's age is the newest modification time (`st_mtimespec`) of anything inside it, capped at
   10,000 entries. If the cap is reached the folder is treated as "recently used" (S5).
 
 ### 6.3 Performance targets

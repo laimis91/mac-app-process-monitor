@@ -64,7 +64,7 @@ enum Leftovers {
     /// The bundle ID and names of a bundle folder (an app, plug-in, panel, …), if it has one.
     static func bundleInfo(_ path: String) -> AppInfo? {
         guard let st = ScanEngine.lstatInfo(path), (st.st_mode & S_IFMT) == S_IFDIR else { return nil }
-        guard let d = NSDictionary(contentsOfFile: path + "/Contents/Info.plist") ?? NSDictionary(contentsOfFile: path + "/Info.plist"),
+        guard let d = AppInventory.infoPlist(path, flat: true),
               let id = d["CFBundleIdentifier"] as? String, !id.isEmpty else { return nil }
         let file = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
         let names = [d["CFBundleName"] as? String, d["CFBundleDisplayName"] as? String, d["CFBundleExecutable"] as? String, file]
@@ -156,20 +156,13 @@ enum Leftovers {
             if ctx.cancel.isSet { break }
             progress("Looking in \(place.rel)…")
             let root = place.root(ctx.roots)
-            if place.needsFDA && ctx.fda != .granted {
-                // Without Full Disk Access these folders aren't entered: macOS may ask the user about
-                // each app's data instead of failing (spec 9.1). Shown as a greyed row.
-                if ScanEngine.lstatInfo(root) != nil { fdaPlaces.append(place) }
-                continue
-            }
             let names: [String]
-            switch ScanEngine.children(root) {
-            case .missing: continue
-            case .noAccess(let e):
-                if e == EPERM { fdaPlaces.append(place) } else {
-                    notices.append(Category(id: "L-ACCESS-" + place.id, title: place.rel, group: .leftovers, method: .none,
-                                            explanation: "Couldn't be checked for leftovers.", items: [], notice: Rules.noticeFor(e)))
-                }
+            switch list(place, ctx) {
+            case .skip: continue
+            case .needsFDA: fdaPlaces.append(place); continue
+            case .failed(let e):
+                notices.append(Category(id: "L-ACCESS-" + place.id, title: place.rel, group: .leftovers, method: .none,
+                                        explanation: "Couldn't be checked for leftovers.", items: [], notice: Rules.noticeFor(e)))
                 continue
             case .ok(let n): names = n
             }
@@ -222,6 +215,21 @@ enum Leftovers {
         return Result(categories: cats + notices, decision: decision)
     }
 
+    enum PlaceListing { case ok([String]), needsFDA, skip, failed(Int32) }
+
+    /// The entries of one place, for the leftovers finder and the uninstaller alike. Without Full
+    /// Disk Access the FDA places aren't entered: macOS may ask the user about each app's data
+    /// instead of failing (spec 9.1); they are shown as a greyed row if they exist (`needsFDA`).
+    static func list(_ place: LeftoverPlace, _ ctx: ScanContext) -> PlaceListing {
+        let root = place.root(ctx.roots)
+        if place.needsFDA && ctx.fda != .granted { return ScanEngine.lstatInfo(root) != nil ? .needsFDA : .skip }
+        switch ScanEngine.children(root) {
+        case .missing: return .skip
+        case .noAccess(let e): return e == EPERM ? .needsFDA : .failed(e)
+        case .ok(let n): return .ok(n)
+        }
+    }
+
     /// Size, age and the things that keep a whole group (S5). Also reads the name evidence.
     static func measure(_ c: inout LeftoverCandidate, _ st: stat, _ ctx: ScanContext) {
         let info = c.place.tier == .infoOnly
@@ -265,7 +273,8 @@ enum Leftovers {
             if g.sameVendor { owners.append(BundleIDs.vendor(g.id)) }
             var i = CleanItem(path: c.path, name: c.name, size: c.size, newest: c.newest,
                               risk: li.selectable ? .review : .info, method: li.selectable ? .trash : .none,
-                              reason: li.reason, allowRoot: c.place.system ? "" : URL(fileURLWithPath: c.path).deletingLastPathComponent().path,
+                              reason: li.reason,
+                              scope: c.place.system ? .none : .rule(root: URL(fileURLWithPath: c.path).deletingLastPathComponent().path),
                               fileID: c.fileID, owners: owners, ageLimitDays: li.ageLimit, checkOpenFiles: true)
             // S7 by name: the app's last-known name, and a folder's own name when it is named by app
             var names = c.key.kind == .name ? [c.key.key] : []

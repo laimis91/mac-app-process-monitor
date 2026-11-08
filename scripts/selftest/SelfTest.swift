@@ -29,6 +29,10 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         leftoverScan()
         uninstallRules()
         uninstallScan()
+        openFiles()
+        guardScopes()
+        embeddedOwner()
+        trashLookup()
         print("selftest: \(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
     }
@@ -123,7 +127,7 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
 
     static func item(_ risk: Risk, _ method: Method, running: String? = nil, note: String? = nil) -> CleanItem {
         var i = CleanItem(path: "/x", name: "x", size: 1, newest: nil, risk: risk, method: method, reason: "",
-                          allowRoot: "/", fileID: [])
+                          scope: .rule(root: "/"), fileID: [])
         i.runningOwner = running; i.note = note
         return i
     }
@@ -214,7 +218,7 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
             fm.createFile(atPath: caches + "/" + n, contents: Data([1]), attributes: nil)
             let p = caches + "/" + n
             let item = CleanItem(path: p, name: n, size: 1, newest: nil, risk: .safe, method: .trash, reason: "",
-                                 allowRoot: caches, fileID: ScanEngine.fileID(p) ?? [])
+                                 scope: .rule(root: caches), fileID: ScanEngine.fileID(p) ?? [])
             let cat = Category(id: "J-CACHE", title: "", group: .general, method: .trash, explanation: "", items: [item])
             pairs.append((cat, item))
         }
@@ -287,7 +291,7 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         let old = Date(timeIntervalSinceNow: -40 * 86_400)
         try? fm.setAttributes([.modificationDate: old], ofItemAtPath: dir + "/a/f")
         try? fm.setAttributes([.modificationDate: old], ofItemAtPath: dir + "/a")
-        eq(days(since: ScanEngine.newest(dir + "/a"), now: Date()), 40, "newest date inside")
+        eq(days(since: ScanEngine.measure(dir + "/a", links: nil).newest, now: Date()), 40, "newest date inside")
     }
 
     // MARK: Space map (spec 8, 6.4)
@@ -811,8 +815,10 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         eq(cats.first { $0.id == "name:com.gone.app" || $0.id == "L:name:com.gone.app" }?.items.map(\.name), ["GoneApp"], "named folder: Possible")
         check(!paths.contains { $0.contains("ignored") || $0.contains("link") || $0.hasSuffix("notplist") }, "ignored, symlinks, wrong extension")
         check(cats.flatMap(\.items).allSatisfy { !$0.preselected }, "9.4 (5): nothing pre-selected")
-        check(cats.flatMap(\.items).allSatisfy { $0.allowRoot.isEmpty || PathGuard(roots: r).check($0.path, allowRoot: $0.allowRoot) == nil },
-              "every item passes the path guard with its root")
+        check(cats.flatMap(\.items).allSatisfy { i in
+            if case .rule(let root) = i.scope { return PathGuard(roots: r).check(i.path, allowRoot: root) == nil }
+            return i.scope == .none && !i.selectable
+        }, "every item passes the path guard with its root; the rest are Info")
         // no Full Disk Access: containers aren't entered and are flagged
         let nofda = scan(fda: .denied)
         check(nofda.contains { $0.id == Leftovers.fdaID && $0.notice == "Needs Full Disk Access" }, "no FDA: notice row")
@@ -838,14 +844,14 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
     static func uninstallRules() {
         let t = ["com.vendor.app", "com.vendor.login"]
         let o: [(id: String, name: String)] = [("com.vendor.app.pro", "Pro"), ("com.other.app", "Other")]
-        eq(Uninstaller.owner(of: "com.vendor.app", target: t, others: o), .target, "own ID")
-        eq(Uninstaller.owner(of: "COM.Vendor.App.cache", target: t, others: o), .target, "dot-prefix, no case")
-        eq(Uninstaller.owner(of: "com.vendor.login", target: t, others: o), .target, "embedded ID")
-        eq(Uninstaller.owner(of: "com.vendor.app.pro", target: t, others: o), .other("Pro"), "longer installed ID wins")
-        eq(Uninstaller.owner(of: "com.vendor.app.pro.helper", target: t, others: o), .other("Pro"), "its helpers too")
-        eq(Uninstaller.owner(of: "com.vendor.apps", target: t, others: o), nil, "no partial component")
-        eq(Uninstaller.owner(of: "com.vendor", target: t, others: o), nil, "shorter key not matched")
-        eq(Uninstaller.owner(of: "com.vendor.login", target: t, others: [("com.vendor.login", "Suite")]), .other("Suite"),
+        eq(Uninstaller.owner(of: "com.vendor.app", target: t, others: o, targetPath: "/Applications/Vendor.app"), .target, "own ID")
+        eq(Uninstaller.owner(of: "COM.Vendor.App.cache", target: t, others: o, targetPath: "/Applications/Vendor.app"), .target, "dot-prefix, no case")
+        eq(Uninstaller.owner(of: "com.vendor.login", target: t, others: o, targetPath: "/Applications/Vendor.app"), .target, "embedded ID")
+        eq(Uninstaller.owner(of: "com.vendor.app.pro", target: t, others: o, targetPath: "/Applications/Vendor.app"), .other("Pro"), "longer installed ID wins")
+        eq(Uninstaller.owner(of: "com.vendor.app.pro.helper", target: t, others: o, targetPath: "/Applications/Vendor.app"), .other("Pro"), "its helpers too")
+        eq(Uninstaller.owner(of: "com.vendor.apps", target: t, others: o, targetPath: "/Applications/Vendor.app"), nil, "no partial component")
+        eq(Uninstaller.owner(of: "com.vendor", target: t, others: o, targetPath: "/Applications/Vendor.app"), nil, "shorter key not matched")
+        eq(Uninstaller.owner(of: "com.vendor.login", target: t, others: [("com.vendor.login", "Suite")], targetPath: "/Applications/Vendor.app"), .other("Suite"),
            "an ID another app also has: the other app wins")
         // un-4: LaunchServices knows an app the folders don't (com.vendor.app.beta in Downloads).
         let ls: (String) -> AppInfo? = { id in
@@ -860,6 +866,14 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         let self_: (String) -> AppInfo? = { _ in AppInfo(id: "com.vendor.app", name: "Vendor", path: "/Applications/Vendor.app") }
         eq(Uninstaller.owner(of: "com.vendor.app.cache", target: t, others: o, lookup: self_, targetPath: "/Applications/Vendor.app"),
            .target, "LaunchServices answering with the target keeps it")
+        // E10: an empty target path is no app's path, so an app LaunchServices names elsewhere wins.
+        let elsewhere: (String) -> AppInfo? = { _ in AppInfo(id: "com.vendor.app.x", name: "X", path: "/Users/x/Downloads/X.app") }
+        eq(Uninstaller.owner(of: "com.vendor.app.x.cache", target: t, others: o, lookup: elsewhere, targetPath: ""),
+           .other("X"), "e10: empty target path matches no app")
+        eq(Uninstaller.owner(of: "com.vendor.app.x.cache", target: t, others: o, lookup: elsewhere, targetPath: "/Users/x/Downloads/X.app"),
+           .target, "e10: an app inside the target path is the target")
+        eq(Uninstaller.owner(of: "com.vendor.app.x.cache", target: t, others: o, lookup: self_, targetPath: ""),
+           .target, "e10: a target ID still counts without a path")
         eq(Uninstaller.kind(LeftoverPlace.named("caches")), .safe, "caches Safe")
         eq(Uninstaller.kind(LeftoverPlace.named("preferences")), .data, "settings Review, pre-selected")
         eq(Uninstaller.kind(LeftoverPlace.named("cookies")), .data, "cookies Review, pre-selected")
@@ -869,6 +883,8 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         let a = AppInfo(id: "com.vendor.app", name: "Vendor App", path: "/x", names: ["Vendor App", "VendorApp", "App"])
         eq(Uninstaller.nameKeys(a, others: []), ["vendorapp"], "name keys, short names left out")
         eq(Uninstaller.nameKeys(a, others: ["Vendor-App"]), [], "a name another app has is not used")
+        let electron = AppInfo(id: "com.vendor.chat", name: "Vendor Chat", path: "/x", names: ["Vendor Chat", "Electron", "Code", "Google"])
+        eq(Uninstaller.nameKeys(electron, others: []), ["vendorchat"], "protected names (Electron, Code, Google) are not name keys")
     }
 
     static func uninstallScan() {
@@ -974,7 +990,7 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
                                  H + "LaunchAgents/agent.plist", "Library/LaunchDaemons/com.vendor.app.daemon.plist"]), "related items")
         let bundle = items["Applications/Vendor.app"]
         check(bundle?.appBundle == true && bundle?.risk == .requested && bundle?.preselected == true, "bundle Requested, pre-selected")
-        eq(bundle?.allowRoot, Roots.canonical(A), "bundle's allow root is Applications")
+        eq(bundle?.scope, .appBundle(root: Roots.canonical(A)), "bundle's allow root is Applications")
         eq(items[H + "Application Support/com.vendor.app"]?.preselected, true, "app data pre-selected")
         eq(items[H + "Application Support/com.vendor.app"]?.risk, .review, "app data Review")
         eq(items[H + "Group Containers/group.com.vendor.app"]?.preselected, false, "group container not pre-selected")
@@ -1013,6 +1029,19 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         check(g.check(A + "/Vendor.app/Contents/Library/LoginItems/Login.app", allowRoot: A, appBundle: true) != nil, "un-1: guard denies a bundle inside a bundle")
         app(A + "/Tools.bundle/Kept.app", "com.fixture.kept", "Kept")
         eq(g.check(A + "/Tools.bundle/Kept.app", allowRoot: A, appBundle: true), "Part of another app", "f-2: a bundle folder inside Applications still counts")
+        // E7: the guard itself refuses apps that come with macOS, and bundles whose ID can't be read.
+        eq(g.check(A + "/Fake.app", allowRoot: A, appBundle: true), "Apps that come with macOS can't be removed", "e7: com.apple. bundle refused by the guard")
+        app(A + "/Upper.app", "COM.Apple.upper", "Upper")
+        eq(g.check(A + "/Upper.app", allowRoot: A, appBundle: true), "Apps that come with macOS can't be removed", "e7: without case")
+        eq(g.check(A + "/NotApp.app", allowRoot: A, appBundle: true), "The app's bundle ID can't be read", "e7: no Info.plist refused")
+        file(A + "/NoID.app/Contents/MacOS/x")
+        (["CFBundleName": "NoID"] as NSDictionary).write(toFile: A + "/NoID.app/Contents/Info.plist", atomically: true)
+        eq(g.check(A + "/NoID.app", allowRoot: A, appBundle: true), "The app's bundle ID can't be read", "e7: no bundle ID refused")
+        eq(g.check(A + "/Link.app", allowRoot: A, appBundle: true), "Not an app", "e7: a link named .app refused")
+        try? fm.createDirectory(atPath: A + "/Linked.app", withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(atPath: A + "/Linked.app/Contents", withDestinationPath: A + "/Vendor.app/Contents")
+        eq(g.check(A + "/Linked.app", allowRoot: A, appBundle: true), "The app's bundle ID can't be read", "e7: a linked Contents folder refused")
+        try? fm.removeItem(atPath: A + "/Linked.app")
 
         // un-3, un-6: at action time a process inside the bundle skips every uninstaller item, not only the bundle.
         guard let fresh = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(), probes: probes) else { check(false, "plan again"); return }
@@ -1027,5 +1056,120 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         env.processesInside = { _ in [] }
         let idle = Cleaner.clean(movable, env: env)
         check(!idle.isEmpty && idle.allSatisfy { $0.status == .planned }, "nothing running: everything planned")
+    }
+
+    // MARK: Review fixes
+
+    /// E2: the open-file lookup finds a path equal to the item or inside it, component-wise and
+    /// without case, never a sibling that only shares a prefix.
+    static func openFiles() {
+        let o = OpenFiles([("/a/b-c/x", "dash"), ("/a/b.d", "dot"), ("/a/bc", "longer"), ("/A/B/Inner/f", "inner"),
+                           ("/a/b/inner/f", "dup"), ("/q/r", "exact"), ("/q/r", "again"), ("/z/Ünï/f", "unicode")])
+        eq(o.count, 6, "duplicate paths kept once (case-insensitive)")
+        eq(o.user(of: "/a/b"), "inner", "inside, case-insensitive, first process kept")
+        eq(o.user(of: "/A/B/INNER"), "inner", "inside a deeper folder")
+        eq(o.user(of: "/a/b/inner/f"), "inner", "the open file itself")
+        eq(o.user(of: "/q/r"), "exact", "equal path")
+        eq(o.user(of: "/Q/R"), "exact", "equal path without case")
+        eq(o.user(of: "/a/bc"), "longer", "equal path among siblings")
+        eq(o.user(of: "/a/b-c"), "dash", "a folder that sorts between siblings")
+        eq(o.user(of: "/a/b-"), nil, "a prefix of a name is not a folder")
+        eq(o.user(of: "/a/b/inner/f/g"), nil, "below an open file is nothing")
+        eq(o.user(of: "/q"), "exact", "parent of an open file")
+        eq(o.user(of: "/q/r2"), nil, "sibling sharing a prefix")
+        eq(o.user(of: "/a/bcd"), nil, "longer sibling")
+        eq(o.user(of: "/z/ünï"), "unicode", "non-ASCII without case")
+        eq(o.user(of: "/z/u\u{0308}n\u{0131}"), nil, "different letters are different")
+        eq(o.user(of: "/z/u\u{0308}ni\u{0308}"), "unicode", "decomposed form matches")
+        eq(OpenFiles([]).user(of: "/a"), nil, "empty snapshot")
+        // the real snapshot sees this process's own open file
+        let p = NSTemporaryDirectory() + "appmon-open-\(getpid())"
+        FileManager.default.createFile(atPath: p, contents: Data([1]))
+        defer { try? FileManager.default.removeItem(atPath: p) }
+        if let h = FileHandle(forReadingAtPath: p) {
+            check(OpenFiles.snapshot()?.user(of: Roots.canonical(p)) != nil, "snapshot finds an open file")
+            try? h.close()
+        }
+    }
+
+    /// E3: one guard scope per item. Rows without a guard, or with an empty root, are refused at
+    /// action time with a reason; a Space-map pick never uses the rule guard, and the reverse.
+    static func guardScopes() {
+        let fm = FileManager.default
+        let root = "/private/tmp/appmon-fixture-selftest-scope-\(getpid())"
+        try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+        guard let r = Roots.fixture(root) else { check(false, "scope fixture"); return }
+        let caches = r.h("Library/Caches")
+        try? fm.createDirectory(atPath: caches + "/com.x.y", withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: r.h("Projects/site"), withIntermediateDirectories: true)
+        let inv = AppInventory(roots: r, lookup: nil, running: { [] })
+        var env = CleanEnvironment(guardian: PathGuard(roots: r), runningNow: { [] }, inventory: inv, roots: r,
+                                   dryRun: true, now: Date.init)
+        func item(_ p: String, _ s: GuardScope) -> CleanItem {
+            CleanItem(path: p, name: "x", size: 1, newest: nil, risk: .safe, method: .trash, reason: "",
+                      scope: s, fileID: ScanEngine.fileID(p) ?? [])
+        }
+        let cache = caches + "/com.x.y", site = r.h("Projects/site")
+        eq(Cleaner.lastChecks(item(cache, .rule(root: caches)), env), nil, "rule scope checked by the path guard")
+        eq(Cleaner.lastChecks(item(cache, .none), env), "Nothing may be moved from this row", "no scope: refused")
+        eq(Cleaner.lastChecks(item(cache, .rule(root: "")), env), "No rule folder for this item", "empty rule root refused")
+        eq(Cleaner.lastChecks(item(cache, .appBundle(root: "")), env), "No app folder for this item", "empty app root refused")
+        check(Cleaner.lastChecks(item(cache, .appBundle(root: caches)), env) != nil, "a rule root is no app root")
+        eq(Cleaner.lastChecks(item(site, .spaceMap), env), "No Space-map guard", "Space-map pick needs the Space-map guard")
+        check(Cleaner.lastChecks(item(site, .rule(root: r.home)), env) != nil, "a Space-map path fails the rule guard")
+        env.spaceGuard = SpaceGuard(roots: r)
+        eq(Cleaner.lastChecks(item(site, .spaceMap), env), nil, "Space-map pick passes the Space-map guard")
+        check(Cleaner.lastChecks(item(cache, .spaceMap), env) != nil, "~/Library refused for a Space-map pick")
+        let cat = Category(id: "X", title: "", group: .general, method: .trash, explanation: "", items: [])
+        eq(Cleaner.clean([(cat, item(cache, .none))], env: env).first?.reason, "Nothing may be moved from this row",
+           "clean refuses a trash row without a guard before measuring")
+        check(item(site, .spaceMap).spaceMap && !item(site, .spaceMap).appBundle, "Space-map flag from the scope")
+        check(item(site, .appBundle(root: r.applications)).appBundle && !item(site, .appBundle(root: r.applications)).spaceMap,
+              "app-bundle flag from the scope")
+        check(!item(site, .rule(root: caches)).spaceMap && !item(site, .rule(root: caches)).appBundle, "rule scope sets neither flag")
+    }
+
+    /// E12: an embedded bundle ID owner is the longest matching embedded ID, not the first found.
+    static func embeddedOwner() {
+        let fm = FileManager.default
+        let root = "/private/tmp/appmon-fixture-selftest-emb-\(getpid())"
+        try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+        guard let r = Roots.fixture(root) else { check(false, "embedded fixture"); return }
+        func bundle(_ path: String, _ id: String, _ name: String) {
+            try? fm.createDirectory(atPath: path + "/Contents/MacOS", withIntermediateDirectories: true)
+            (["CFBundleIdentifier": id, "CFBundleName": name] as NSDictionary).write(toFile: path + "/Contents/Info.plist", atomically: true)
+        }
+        bundle(r.applications + "/A.app", "com.a.app", "A")
+        bundle(r.applications + "/A.app/Contents/PlugIns/S.appex", "com.x.suite", "S")
+        bundle(r.applications + "/B.app", "com.b.app", "B")
+        bundle(r.applications + "/B.app/Contents/PlugIns/H.appex", "com.x.suite.helper", "H")
+        let inv = AppInventory(roots: r, lookup: nil, running: { [] })
+        eq(inv.owner(of: "com.x.suite.helper.cache")?.name, "B", "longest embedded ID wins")
+        eq(inv.owner(of: "com.x.suite.other")?.name, "A", "shorter embedded ID when only it matches")
+        eq(inv.owner(of: "com.x.suite.helper")?.name, "B", "exact embedded ID")
+    }
+
+    /// E8: after an unclear Finder answer, only the same file found in the Trash counts as moved.
+    static func trashLookup() {
+        let names = ["report.txt", "report 2.txt", "report 10.32.16.txt", "reports.txt", "report.txt.old",
+                     "com.vendor.app 3", "data"]
+        eq(TrashLookup.candidates("report.txt", in: names), ["report.txt", "report 10.32.16.txt", "report 2.txt"],
+           "plain name first, then Finder's unique names")
+        eq(TrashLookup.candidates("com.vendor.app", in: names), ["com.vendor.app", "com.vendor.app 3"], "folder named by bundle ID")
+        eq(TrashLookup.candidates("data", in: names), ["data"], "no other candidates")
+        let fm = FileManager.default
+        let t = NSTemporaryDirectory() + "appmon-trash-\(getpid())"
+        try? fm.createDirectory(atPath: t + "/src", withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: t) }
+        fm.createFile(atPath: t + "/src/report.txt", contents: Data([1]))
+        let id = ScanEngine.fileID(t + "/src/report.txt") ?? []
+        try? fm.moveItem(atPath: t + "/src/report.txt", toPath: t + "/report 2.txt")
+        fm.createFile(atPath: t + "/report.txt", contents: Data([2]))       // another file with the same name
+        check(TrashLookup.found("report.txt", fileID: id, trash: t), "the same file under a unique name")
+        check(!TrashLookup.found("report.txt", fileID: ScanEngine.fileID(t + "/src") ?? [], trash: t), "another file isn't it")
+        check(!TrashLookup.found("report.txt", fileID: [], trash: t), "unknown file ID never found")
+        check(!TrashLookup.found("report.txt", fileID: id, trash: t + "/missing"), "no Trash, not found")
     }
 }
