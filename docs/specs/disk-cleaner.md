@@ -816,8 +816,12 @@ With fixture apps `com.vendor.app` and `com.vendor.app.pro` both installed, unin
   - a failed process listing counted as "nothing running": it now counts as running (S5);
   - after picking another app, the previous app's header and Quit button stayed until the new
     plan arrived: they are cleared at once, and Quit acts only on the app shown;
-  - Quit is offered only when a running app was found by bundle ID; for processes found by path,
-    the banner says to quit them in Activity Monitor.
+  - Quit is offered only when a running app was found by bundle ID; for an app matched by name
+    alone, or processes found by path, the banner says to quit them in Activity Monitor.
+
+  The final review of these fixes found that Quit could still show for a match by name alone, and
+  that the nested-bundle check also looked at folders above the Applications root. Both are
+  fixed: only folders between the app root and the app count.
 - **Limits.** Entitlements are read from the code signature; an unsigned or unreadable app has
   none, so a group container shared by an unsigned app isn't detected as shared. Group
   containers are never pre-selected, which covers this. Processes of other users are found by

@@ -109,11 +109,12 @@ struct PathGuard {
         if appBundle {
             guard appRoots.contains(rootC) else { return "Not an allowed location" }
             guard item.last?.hasSuffix(".app") == true else { return "Not an app" }
-            guard !item.dropLast().contains(where: Self.isBundleName) else { return "Part of another app" }
         } else {
             guard allowRoots.contains(rootC) else { return "Not an allowed location" }
         }
         guard Self.strictlyInside(item, rootC) else { return "Outside its rule's folder" }
+        // Only the folders between the app root and the bundle: none may be a bundle itself.
+        if appBundle, item[rootC.count..<(item.count - 1)].contains(where: Self.isBundleName) { return "Part of another app" }
         return nil
     }
 }

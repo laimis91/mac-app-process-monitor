@@ -917,6 +917,15 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         check(Uninstaller.refusal(A, roots: r, selfIDs: me) != nil, "Applications itself refused")
         check(Uninstaller.refusal(A + "/Vendor.app/Contents/Library/LoginItems/Login.app", roots: r, selfIDs: me)?.contains("part of another app") == true,
               "un-1: helper inside another app refused")
+        // f-2: folders above the app root aren't looked at (a home folder named like a bundle).
+        let odd = "/private/tmp/appmon-fixture-selftest-odd-\(getpid()).bundle"
+        try? fm.createDirectory(atPath: odd, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: odd) }
+        if let ro = Roots.fixture(odd) {
+            app(ro.applications + "/Plain.app", "com.fixture.plain", "Plain")
+            eq(Uninstaller.refusal(ro.applications + "/Plain.app", roots: ro, selfIDs: me), nil, "f-2: bundle-like name above Applications ignored")
+            eq(PathGuard(roots: ro).check(ro.applications + "/Plain.app", allowRoot: ro.applications, appBundle: true), nil, "f-2: guard too")
+        } else { check(false, "odd fixture root") }
         let choices = Uninstaller.choices(r, selfIDs: me)
         check(!choices.contains { $0.app.id.hasPrefix("com.apple.") }, "Apple apps not offered")
         check(choices.contains { $0.app.id == "com.vendor.app" && $0.refusal == nil }, "Vendor offered")
@@ -980,6 +989,10 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         check(noFDA?.categories.flatMap(\.items).contains { $0.path.contains("Containers/") } == false, "no FDA: containers not entered")
         let busy = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(running: [RunningApp(id: "com.vendor.login", name: "Login")]), probes: probes)
         eq(busy?.target.running, ["Login"], "running helper found")
+        eq(busy?.target.runningByID, true, "found by bundle ID: Quit offered")
+        let byName = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(running: [RunningApp(id: "org.unrelated.vendor", name: "Vendor")]), probes: probes)
+        eq(byName?.target.running, ["Vendor"], "f-1: running by name alone blocks")
+        eq(byName?.target.runningByID, false, "f-1: but Quit isn't offered")
         check(busy?.categories.flatMap(\.items).allSatisfy { !$0.preselected } == true, "running: nothing pre-selected")
         var inside = probes; inside.processesInside = { _ in ["tool"] }
         eq(Uninstaller.plan(A + "/Vendor.app", ctx: ctx(), probes: inside)?.target.running, ["tool"], "process inside the bundle counts")
@@ -998,6 +1011,8 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         check(g.check(L + "/Caches/com.vendor.app", allowRoot: L + "/Caches", appBundle: true) != nil, "bundle flag needs an app root")
         check(g.check(r.systemApplications + "/Sys.app", allowRoot: r.systemApplications, appBundle: true) != nil, "System/Applications denied")
         check(g.check(A + "/Vendor.app/Contents/Library/LoginItems/Login.app", allowRoot: A, appBundle: true) != nil, "un-1: guard denies a bundle inside a bundle")
+        app(A + "/Tools.bundle/Kept.app", "com.fixture.kept", "Kept")
+        eq(g.check(A + "/Tools.bundle/Kept.app", allowRoot: A, appBundle: true), "Part of another app", "f-2: a bundle folder inside Applications still counts")
 
         // un-3, un-6: at action time a process inside the bundle skips every uninstaller item, not only the bundle.
         guard let fresh = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(), probes: probes) else { check(false, "plan again"); return }

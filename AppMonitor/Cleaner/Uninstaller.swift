@@ -55,10 +55,6 @@ enum Uninstaller {
         }
         guard Leftovers.isBundle(p), let a = AppInventory.info(p) else { return "This isn't an app." }
         let c = PathGuard.comps(p)
-        // A helper or extension inside another bundle is part of that app, never an app to remove.
-        if c.dropLast().contains(where: PathGuard.isBundleName) {
-            return "This is part of another app. Uninstall that app instead."
-        }
         if a.id.lowercased().hasPrefix("com.apple.")
             || PathGuard.within(c, PathGuard.comps(Roots.canonical(roots.systemApplications)))
             || PathGuard.within(c, ["system"]) {
@@ -68,8 +64,13 @@ enum Uninstaller {
             return "App Monitor can't uninstall itself. Quit it and move it to the Trash in Finder."
         }
         let roots = [roots.applications, roots.h("Applications")].map { PathGuard.comps(Roots.canonical($0)) }
-        guard roots.contains(where: { PathGuard.strictlyInside(c, $0) }) else {
+        guard let root = roots.first(where: { PathGuard.strictlyInside(c, $0) }) else {
             return "This app isn't in Applications. Use the app's own uninstaller."
+        }
+        // A helper or extension inside another bundle is part of that app, never an app to remove.
+        // Only the folders between Applications and the app count.
+        if c[root.count..<(c.count - 1)].contains(where: PathGuard.isBundleName) {
+            return "This is part of another app. Uninstall that app instead."
         }
         if case .failure(let r) = PathGuard.locate(p) { return r.reason }
         guard Cleaner.userCanMove(p, st) else {
@@ -300,7 +301,8 @@ enum Uninstaller {
         // S7: the app, a helper, or anything running from inside the bundle blocks the whole uninstall.
         var running = Set<String>()
         if let r = ctx.inventory.runningOwner(t.ids, names: ownerNames, snapshot: ctx.running) { running.insert(r) }
-        t.runningByID = !running.isEmpty
+        // Quit can stop only apps found by bundle ID; a match by name alone is blocked but not offered.
+        t.runningByID = ctx.running.contains { r in t.ids.contains { BundleIDs.related(r.id, $0) } }
         for n in probes.processesInside(path) { running.insert(n) }
         t.running = running.sorted()
         if let who = t.running.first {
