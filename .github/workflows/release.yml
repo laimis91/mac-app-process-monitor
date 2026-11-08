@@ -19,8 +19,13 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
+    defaults:
+      run:
+        shell: bash   # bash --noprofile --norc -eo pipefail: a failing command anywhere in a pipe fails the step
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Check signing secrets
         env:
@@ -98,8 +103,17 @@ jobs:
             echo "::error::Release build has no stable designated requirement: $REQ"
             exit 1
           fi
-          # developer-only switches must not be in a release build
-          ! strings "$APP/Contents/MacOS/AppMonitor" | grep -qE 'APPMON_SCAN_ROOT|scan-json'
+          # developer-only switches must not be in a release build (Cleaner/SystemProbes.swift, Cleaner/Headless.swift)
+          BIN="$APP/Contents/MacOS/AppMonitor"
+          STRINGS="$RUNNER_TEMP/appmon-strings.txt"
+          if ! strings "$BIN" > "$STRINGS" || [ ! -s "$STRINGS" ]; then
+            echo "::error::Couldn't read the strings of $BIN"
+            exit 1
+          fi
+          if grep -qE 'APPMON_SCAN_ROOT|Headless mode needs' "$STRINGS"; then
+            echo "::error::Release build contains developer-only switches: $(grep -oE 'APPMON_SCAN_ROOT|Headless mode needs' "$STRINGS" | sort -u | tr '\n' ' ')"
+            exit 1
+          fi
 
       - name: Zip
         run: |

@@ -57,7 +57,9 @@ memory in plain terms.
   and data an app shares with another app is shown but kept. The app, its caches and its settings
   are pre-selected; everything goes to the Trash, so Put Back works. Apps that come with macOS,
   apps outside Applications and running apps are not removed.
-- Lightweight: uses about 1–3% of one CPU core.
+- Samples only while its window is on screen. Sampling every 2 seconds uses about 10% of one CPU
+  core (measured on an M4 Pro with about 1,100 processes); with the window closed, hidden,
+  minimised or covered it uses almost none.
 - Native SwiftUI, no dependencies, universal (Apple Silicon and Intel).
 
 ## Install
@@ -149,6 +151,7 @@ python3 scripts/apptop.py --detail Safari
 ```
 AppMonitor/
   main.swift        data collection: processes, memory, GPU
+  ProcessTree.swift which app owns each process; pid identity checks before ending one
   Views.swift       UI and theme
   Demo.swift        demo mode and window capture
   CleanerModel.swift, CleanerViews.swift   Disk tab and Settings window
@@ -156,7 +159,8 @@ AppMonitor/
   Cleaner/          disk cleaner engine: rules, path guard, scanner, actions
   Icon/             app icon and the script that draws it
   build.sh          builds App Monitor.app
-scripts/            apptop.py, screenshot.sh, selftest.sh, fixture-test.sh, make-signing-cert.sh
+scripts/            apptop.py, screenshot.sh, selftest.sh, grouping-test.sh, fixture-test.sh,
+                    make-fixtures.sh (the fake folder trees fixture-test.sh uses), make-signing-cert.sh
 docs/               README screenshot, disk cleaner specification
 ```
 
@@ -164,6 +168,7 @@ docs/               README screenshot, disk cleaner specification
 
 ```bash
 scripts/selftest.sh       # disk cleaner logic: path guards, rules, key parsing, settings, Space map
+scripts/grouping-test.sh  # which app owns each process, in any visit order; pid identity checks
 scripts/fixture-test.sh   # scans and cleans a made-up folder tree (its tiny fake files go to your Trash)
 ```
 

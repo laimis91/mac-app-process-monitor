@@ -7,14 +7,27 @@
 #   UPDATE_GOLDEN=1 scripts/fixture-test.sh   # rewrite the golden file after checking it by hand
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WORK="" FIX="" UFIX="" HOLDER=""
+cleanup() {
+  rc=$?
+  if [ -n "$HOLDER" ]; then kill "$HOLDER" 2>/dev/null || true; fi
+  for d in "$WORK" "$FIX" "$UFIX"; do
+    [ -n "$d" ] || continue
+    chmod -R u+rwx "$d" 2>/dev/null || true
+    rm -rf "$d" || true
+  done
+  exit $rc
+}
+trap cleanup EXIT
 WORK="$(mktemp -d)"
 FIX="$("$ROOT/scripts/make-fixtures.sh")"
 UFIX="$("$ROOT/scripts/make-fixtures.sh" --uninstall)"
-HOLDER=""
-cleanup() { rc=$?; [ -n "$HOLDER" ] && kill "$HOLDER" 2>/dev/null || true; chmod -R u+rwx "$FIX" 2>/dev/null; rm -rf "$WORK" "$FIX" "$UFIX"; exit $rc; }
-trap cleanup EXIT
 
-APPMON_OUT="$WORK/Debug.app" APPMON_ARCHS="$(uname -m)" APPMON_DEBUG=1 "$ROOT/AppMonitor/build.sh" >/dev/null 2>&1
+if ! APPMON_OUT="$WORK/Debug.app" APPMON_ARCHS="$(uname -m)" APPMON_DEBUG=1 "$ROOT/AppMonitor/build.sh" > "$WORK/build.log" 2>&1; then
+  cat "$WORK/build.log" >&2
+  echo "fixture-test: debug build failed" >&2
+  exit 1
+fi
 BIN="$WORK/Debug.app/Contents/MacOS/AppMonitor"
 run() { APPMON_SCAN_ROOT="$FIX" "$@"; }
 fail=0
@@ -33,7 +46,7 @@ set +e; APPMON_SCAN_ROOT=/private/tmp "$BIN" --scan-json >/dev/null 2>&1; code=$
 
 # 3. Without Full Disk Access the Mail container is skipped and flagged (7.2: 6)
 APPMON_FIXTURE_FDA=denied run "$BIN" --scan-json > "$WORK/nofda.json"
-python3 - "$WORK/nofda.json" <<'PY' && ok "no FDA: container skipped, notice shown" || bad "no FDA handling"
+python3 -I - "$WORK/nofda.json" <<'PY' && ok "no FDA: container skipped, notice shown" || bad "no FDA handling"
 import json, sys
 c = {x["id"]: x for x in json.load(open(sys.argv[1]))}
 m = c["J-MAILDL"]
@@ -48,7 +61,7 @@ snapshot() { (cd "$FIX" && find . 2>/dev/null | sort) || true; }
 before="$(snapshot)"
 APPMON_SELECT="$SELECT" run "$BIN" --clean-json > "$WORK/dry.json"
 [ "$before" = "$(snapshot)" ] && [ ! -e "$FIX/tool-log.txt" ] && ok "dry run changed nothing" || bad "dry run changed the tree"
-python3 - "$WORK/dry.json" <<'PY' && ok "dry run plans the right actions" || bad "dry run plan"
+python3 -I - "$WORK/dry.json" <<'PY' && ok "dry run plans the right actions" || bad "dry run plan"
 import json, sys
 o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
 assert o["home/Library/Caches/com.fixture.running"]["reason"] == "Running App is running", o
@@ -74,7 +87,7 @@ exec 3<&-
 sleep 0.3
 APPMON_FIXTURE_ACT=1 APPMON_SELECT="$SELECT" run "$BIN" --clean-json > "$WORK/act.json"
 kill "$HOLDER" 2>/dev/null || true; HOLDER=""
-python3 - "$WORK/act.json" "$WORK/scan.json" "$FIX" <<'PY' && ok "act: moved, skipped and ran as expected" || bad "act results"
+python3 -I - "$WORK/act.json" "$WORK/scan.json" "$FIX" <<'PY' && ok "act: moved, skipped and ran as expected" || bad "act results"
 import json, os, sys
 o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
 scan = {i["path"].replace("<root>/", ""): i["kb"] for c in json.load(open(sys.argv[2])) for i in c["items"]}
@@ -96,7 +109,7 @@ PY
 
 # 6. A re-scan no longer lists the moved items
 run "$BIN" --scan-json > "$WORK/rescan.json"
-python3 - "$WORK/act.json" "$WORK/rescan.json" <<'PY' && ok "re-scan no longer lists moved items" || bad "re-scan"
+python3 -I - "$WORK/act.json" "$WORK/rescan.json" <<'PY' && ok "re-scan no longer lists moved items" || bad "re-scan"
 import json, sys
 moved = {x["path"] for x in json.load(open(sys.argv[1])) if x["status"] == "moved"}
 listed = {i["path"] for c in json.load(open(sys.argv[2])) for i in c["items"]}
@@ -105,7 +118,7 @@ PY
 
 # 7. Space map (spec 8): sizes match du -kx, labels, Reveal-only items, one-item dry run and act
 run "$BIN" --space-json > "$WORK/space.json"
-python3 - "$WORK/space.json" "$FIX" <<'PY' && ok "space map: sizes match du -kx, labels and reasons" || bad "space map scan"
+python3 -I - "$WORK/space.json" "$FIX" <<'PY' && ok "space map: sizes match du -kx, labels and reasons" || bad "space map scan"
 import json, subprocess, sys
 fix = sys.argv[2]
 n = {x["path"]: x for x in json.load(open(sys.argv[1]))}
@@ -127,7 +140,7 @@ SPACE="home/Projects/site,home/Downloads/old.iso,home/Projects/held,home/Project
 before="$(snapshot)"
 APPMON_SELECT="$SPACE" run "$BIN" --space-trash > "$WORK/space-dry.json"
 [ "$before" = "$(snapshot)" ] && ok "space map dry run changed nothing" || bad "space map dry run changed the tree"
-python3 - "$WORK/space-dry.json" <<'PY' && ok "space map dry run plans only allowed items" || bad "space map dry run plan"
+python3 -I - "$WORK/space-dry.json" <<'PY' && ok "space map dry run plans only allowed items" || bad "space map dry run plan"
 import json, sys
 o = {x["path"]: x for x in json.load(open(sys.argv[1]))}
 for k in ["home/Projects/site", "home/Downloads/old.iso", "home/Projects/held"]:
@@ -142,7 +155,7 @@ exec 3<&-
 sleep 0.3
 APPMON_FIXTURE_ACT=1 APPMON_SELECT="$SPACE" run "$BIN" --space-trash > "$WORK/space-act.json"
 kill "$HOLDER" 2>/dev/null || true; HOLDER=""
-python3 - "$WORK/space-act.json" "$WORK/space.json" "$FIX" <<'PY' && ok "space map act: moved, open item skipped" || bad "space map act"
+python3 -I - "$WORK/space-act.json" "$WORK/space.json" "$FIX" <<'PY' && ok "space map act: moved, open item skipped" || bad "space map act"
 import json, os, sys
 o = {x["path"]: x for x in json.load(open(sys.argv[1]))}
 scan = {x["path"]: x["kb"] for x in json.load(open(sys.argv[2]))}
@@ -161,7 +174,7 @@ run "$BIN" --leftovers-json > "$WORK/left.json"
 if [ "${UPDATE_GOLDEN:-}" = "1" ]; then cp "$WORK/left.json" "$ROOT/scripts/fixtures/expected-leftovers.json"; fi
 if diff -u "$ROOT/scripts/fixtures/expected-leftovers.json" "$WORK/left.json" > "$WORK/left.diff"; then ok "leftovers match golden file"
 else bad "leftovers differ from golden file"; cat "$WORK/left.diff"; fi
-python3 - "$WORK/left.json" <<'PY' && ok "leftovers: installed, recent, protected and ambiguous data kept; one group per removed app" || bad "leftovers scan"
+python3 -I - "$WORK/left.json" <<'PY' && ok "leftovers: installed, recent, protected and ambiguous data kept; one group per removed app" || bad "leftovers scan"
 import json, sys
 cats = json.load(open(sys.argv[1]))
 g = {c["id"]: c for c in cats}
@@ -199,7 +212,7 @@ assert [i["path"] for i in g["L:org.mismatch.app"]["items"]] == ["<root>/home/Li
 PY
 
 APPMON_FIXTURE_FDA=denied run "$BIN" --leftovers-json > "$WORK/left-nofda.json"
-python3 - "$WORK/left-nofda.json" <<'PY' && ok "leftovers without FDA: containers not entered, notice shown" || bad "leftovers FDA handling"
+python3 -I - "$WORK/left-nofda.json" <<'PY' && ok "leftovers without FDA: containers not entered, notice shown" || bad "leftovers FDA handling"
 import json, sys
 cats = json.load(open(sys.argv[1]))
 assert any(c["id"] == "L-FDA" and c.get("notice") == "Needs Full Disk Access" for c in cats), cats
@@ -208,7 +221,7 @@ assert any(c["id"] == "L:org.oldvendor.editor" for c in cats)
 PY
 
 APPMON_FIXTURE_SPOTLIGHT=fail run "$BIN" --leftovers-json > "$WORK/left-nospot.json"
-python3 - "$WORK/left-nospot.json" <<'PY' && ok "leftovers without Spotlight: scan completes, nothing unconfirmed listed (9.4: 6)" || bad "leftovers Spotlight failure"
+python3 -I - "$WORK/left-nospot.json" <<'PY' && ok "leftovers without Spotlight: scan completes, nothing unconfirmed listed (9.4: 6)" || bad "leftovers Spotlight failure"
 import json, sys
 cats = json.load(open(sys.argv[1]))
 assert not any(c["id"].startswith("L:") for c in cats), [c["id"] for c in cats]
@@ -219,7 +232,7 @@ LEFT="home/Library/Application Support/org.oldvendor.editor,home/Library/Caches/
 before="$(snapshot)"
 APPMON_SELECT="$LEFT" run "$BIN" --leftovers-clean > "$WORK/left-dry.json"
 [ "$before" = "$(snapshot)" ] && ok "leftovers dry run changed nothing" || bad "leftovers dry run changed the tree"
-python3 - "$WORK/left-dry.json" <<'PY' && ok "leftovers dry run: only picked items planned, running vendor and admin items skipped" || bad "leftovers dry run plan"
+python3 -I - "$WORK/left-dry.json" <<'PY' && ok "leftovers dry run: only picked items planned, running vendor and admin items skipped" || bad "leftovers dry run plan"
 import json, sys
 o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
 for k in ["home/Library/Application Support/org.oldvendor.editor", "home/Library/Caches/org.oldvendor.editor",
@@ -231,7 +244,7 @@ assert len(o) == 5, o
 PY
 
 APPMON_FIXTURE_ACT=1 APPMON_SELECT="$LEFT" run "$BIN" --leftovers-clean > "$WORK/left-act.json"
-python3 - "$WORK/left-act.json" "$WORK/left.json" "$FIX" <<'PY' && ok "leftovers act: picked items moved, sizes match the scan" || bad "leftovers act"
+python3 -I - "$WORK/left-act.json" "$WORK/left.json" "$FIX" <<'PY' && ok "leftovers act: picked items moved, sizes match the scan" || bad "leftovers act"
 import json, os, sys
 o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
 scan = {i["path"].replace("<root>/", ""): i["kb"] for c in json.load(open(sys.argv[2])) for i in c["items"]}
@@ -246,7 +259,7 @@ for k in ["home/Library/Application Support/com.fixture.gone", "Library/Applicat
     assert os.path.exists(os.path.join(fix, k)), k
 PY
 run "$BIN" --leftovers-json > "$WORK/left-rescan.json"
-python3 - "$WORK/left-act.json" "$WORK/left-rescan.json" <<'PY' && ok "leftovers re-scan no longer lists moved items" || bad "leftovers re-scan"
+python3 -I - "$WORK/left-act.json" "$WORK/left-rescan.json" <<'PY' && ok "leftovers re-scan no longer lists moved items" || bad "leftovers re-scan"
 import json, sys
 moved = {x["path"] for x in json.load(open(sys.argv[1])) if x["status"] == "moved"}
 listed = {i["path"] for c in json.load(open(sys.argv[2])) for i in c["items"]}
@@ -258,7 +271,7 @@ urun() { APPMON_SCAN_ROOT="$UFIX" "$@"; }
 usnap() { (cd "$UFIX" && find . 2>/dev/null | sort) || true; }
 U="Applications/Vendor App.app"
 APPMON_UNINSTALL="$U" urun "$BIN" --uninstall-json > "$WORK/un.json"
-python3 - "$WORK/un.json" <<'PY' && ok "uninstaller lists the app and all its files, Pro's none, the shared group as Info (10 acceptance)" || bad "uninstaller plan"
+python3 -I - "$WORK/un.json" <<'PY' && ok "uninstaller lists the app and all its files, Pro's none, the shared group as Info (10 acceptance)" || bad "uninstaller plan"
 import json, sys
 d = json.load(open(sys.argv[1]))
 items = {i["path"].replace("<root>/", ""): (c["id"], i) for c in d["categories"] for i in c["items"]}
@@ -294,7 +307,7 @@ assert d["ids"] == ["com.uvendor.app", "com.uvendor.login"], d["ids"]   # the li
 assert not any("pro" in p or "sparkle" in p or "fake" in p or "unrelated" in p or p.endswith("helper.plist") for p in items), items.keys()
 PY
 
-python3 - "$BIN" "$UFIX" <<'PY' && ok "uninstaller refuses Apple, outside Applications, links and missing apps" || bad "uninstaller refusals"
+python3 -I - "$BIN" "$UFIX" <<'PY' && ok "uninstaller refuses Apple, outside Applications, links and missing apps" || bad "uninstaller refusals"
 import json, os, subprocess, sys
 binp, fix = sys.argv[1], sys.argv[2]
 def plan(app):
@@ -312,7 +325,7 @@ assert twin["copies"] == ["<root>/home/Applications/Twin.app"], twin
 PY
 
 APPMON_FIXTURE_FDA=denied APPMON_UNINSTALL="$U" urun "$BIN" --uninstall-json > "$WORK/un-nofda.json"
-python3 - "$WORK/un-nofda.json" <<'PY' && ok "uninstaller without FDA: containers not entered, notice shown" || bad "uninstaller FDA handling"
+python3 -I - "$WORK/un-nofda.json" <<'PY' && ok "uninstaller without FDA: containers not entered, notice shown" || bad "uninstaller FDA handling"
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert any(c["id"] == "U-FDA" and c.get("notice") == "Needs Full Disk Access" for c in d["categories"]), d
@@ -324,7 +337,7 @@ before="$(usnap)"
 APPMON_UNINSTALL="Applications/Busy.app" APPMON_SELECT="Applications/Busy.app" urun "$BIN" --uninstall-clean > "$WORK/un-busy.json"
 APPMON_UNINSTALL="$U" APPMON_SELECT="$MORE" urun "$BIN" --uninstall-clean > "$WORK/un-dry.json"
 [ "$before" = "$(usnap)" ] && ok "uninstaller dry run changed nothing" || bad "uninstaller dry run changed the tree"
-python3 - "$WORK/un-dry.json" "$WORK/un-busy.json" <<'PY' && ok "uninstaller dry run: everything picked planned, Info refused, running app skipped" || bad "uninstaller dry run plan"
+python3 -I - "$WORK/un-dry.json" "$WORK/un-busy.json" <<'PY' && ok "uninstaller dry run: everything picked planned, Info refused, running app skipped" || bad "uninstaller dry run plan"
 import json, sys
 o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
 assert len(o) == 16, len(o)
@@ -338,7 +351,7 @@ assert [x["status"] for x in b] == ["skipped"] and b[0]["reason"] == "Busy Helpe
 PY
 
 APPMON_FIXTURE_ACT=1 APPMON_UNINSTALL="$U" APPMON_SELECT="$MORE" urun "$BIN" --uninstall-clean > "$WORK/un-act.json"
-python3 - "$WORK/un-act.json" "$WORK/un.json" "$UFIX" <<'PY' && ok "uninstaller act: the app and its files moved, sizes match, other apps' files stay" || bad "uninstaller act"
+python3 -I - "$WORK/un-act.json" "$WORK/un.json" "$UFIX" <<'PY' && ok "uninstaller act: the app and its files moved, sizes match, other apps' files stay" || bad "uninstaller act"
 import json, os, sys
 o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
 scan = {i["path"].replace("<root>/", ""): i["kb"] for c in json.load(open(sys.argv[2]))["categories"] for i in c["items"]}
