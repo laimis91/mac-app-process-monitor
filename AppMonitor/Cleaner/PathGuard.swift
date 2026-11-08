@@ -7,6 +7,7 @@ struct PathGuard {
     struct Deny { let path: [String]; let except: [[String]] }
 
     let allowRoots: [[String]]
+    let appRoots: [[String]]        // uninstaller only: app bundles in /Applications and ~/Applications
     let deny: [Deny]
     let denyExact: [[String]]       // denied as the folder itself only
 
@@ -32,6 +33,7 @@ struct PathGuard {
             "Library/Developer/Xcode/iOS DeviceSupport", "Library/Mail Downloads",
         ].map { r.h($0) } + [r.temp]
         allowRoots = allow.map(c)
+        appRoots = [r.applications, r.h("Applications")].map(c)
 
         let homeC = c(h)
         var d = Self.systemDeny(r)
@@ -48,7 +50,7 @@ struct PathGuard {
             d += [r.systemApplications].map { Deny(path: c($0), except: []) }
         }
         deny = d
-        denyExact = [homeC, c(r.h("Library"))] + allowRoots
+        denyExact = [homeC, c(r.h("Library"))] + allowRoots + appRoots
     }
 
     /// The S4 list: system locations and other users' homes. Shared with the Space-map guard.
@@ -87,7 +89,9 @@ struct PathGuard {
 
     /// Returns nil when `path` may be acted on under `allowRoot`, otherwise the reason it may not.
     /// Only the parent folder is resolved; the item itself is judged where it sits (S12).
-    func check(_ path: String, allowRoot: String) -> String? {
+    /// The app roots take only app bundles the uninstaller picked (`appBundle`), and those take
+    /// nothing else.
+    func check(_ path: String, allowRoot: String, appBundle: Bool = false) -> String? {
         let item: [String]
         switch Self.locate(path) {
         case .failure(let r): return r.reason
@@ -98,7 +102,12 @@ struct PathGuard {
             return "Protected location"
         }
         let rootC = Self.comps(Roots.canonical(allowRoot))
-        guard allowRoots.contains(rootC) else { return "Not an allowed location" }
+        if appBundle {
+            guard appRoots.contains(rootC) else { return "Not an allowed location" }
+            guard item.last?.hasSuffix(".app") == true else { return "Not an app" }
+        } else {
+            guard allowRoots.contains(rootC) else { return "Not an allowed location" }
+        }
         guard Self.strictlyInside(item, rootC) else { return "Outside its rule's folder" }
         return nil
     }

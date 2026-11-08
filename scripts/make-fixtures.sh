@@ -15,6 +15,73 @@ app() {  # bundle path, bundle ID, name
 PLIST
 }
 
+plist() {  # path, then key/value pairs
+  local f="$1"; shift; mkdir -p "$(dirname "$f")"
+  { echo '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+    while [ $# -gt 1 ]; do echo "<key>$1</key><string>$2</string>"; shift 2; done
+    echo '</dict></plist>'; } > "$f"
+}
+
+# The uninstaller (spec 10) gets its own tree:  make-fixtures.sh --uninstall
+if [ "${1:-}" = "--uninstall" ]; then
+  L="$H/Library"
+  # A signed app: a copy of /usr/bin/true as its executable, ad-hoc signed with app-group entitlements.
+  signed() {  # bundle path, bundle ID, name, app groups…
+    local b="$1" id="$2" name="$3"; shift 3
+    mkdir -p "$b/Contents/MacOS"; cp /usr/bin/true "$b/Contents/MacOS/$name"
+    plist "$b/Contents/Info.plist" CFBundleIdentifier "$id" CFBundleName "$name" CFBundleExecutable "$name"
+    local e="$ROOT/.ent.plist"
+    { echo '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>com.apple.security.application-groups</key><array>'
+      for g in "$@"; do echo "<string>$g</string>"; done
+      echo '</array></dict></plist>'; } > "$e"
+    codesign -f -s - --entitlements "$e" "$b" 2>/dev/null; rm -f "$e"
+  }
+  A="$ROOT/Applications"
+  # The app to uninstall: a login item outside its own ID, a library XPC service (left out), and a
+  # second app whose ID extends it (com.uvendor.app.pro: none of its files may be listed).
+  mkdir -p "$A/Vendor App.app/Contents/Library/LoginItems" "$A/Vendor App.app/Contents/XPCServices"
+  signed "$A/Vendor App.app/Contents/Library/LoginItems/Vendor Login.app" com.uvendor.login "Vendor Login" group.com.uvendor.app
+  signed "$A/Vendor App.app/Contents/XPCServices/Downloader.xpc" org.sparkle-project.Downloader Downloader
+  signed "$A/Vendor App.app" com.uvendor.app "Vendor App" group.com.uvendor.app ABCDE12345.com.uvendor.shared
+  signed "$A/Vendor App Pro.app" com.uvendor.app.pro "Vendor App Pro" ABCDE12345.com.uvendor.shared
+  # Its files, one of each kind (spec 10 table). The caches are new: no age limit applies.
+  for d in Caches Logs HTTPStorages WebKit "Application Support" "Application Scripts"; do file "$L/$d/com.uvendor.app/x" 8192; done
+  file "$L/Caches/com.uvendor.login/x" 4096                                  # the login item's own ID
+  file "$L/Saved Application State/com.uvendor.app.savedState/windows.plist" 4096
+  plist "$L/Preferences/com.uvendor.app.plist" CFBundleName "Vendor App"
+  file "$L/Cookies/com.uvendor.app.binarycookies" 4096
+  file "$L/Containers/com.uvendor.app/Data/x" 8192
+  plist "$L/Containers/com.uvendor.app/.com.apple.containermanagerd.metadata.plist" MCMMetadataIdentifier com.uvendor.app
+  file "$L/Group Containers/group.com.uvendor.app/x" 4096                    # its own app group
+  file "$L/Group Containers/ABCDE12345.com.uvendor.shared/x" 4096            # also claimed by Pro: Info
+  plist "$L/LaunchAgents/com.uvendor.app.agent.plist" Label com.uvendor.app.agent
+  file "$L/Application Support/Vendor App/notes" 4096                        # named like it: not pre-selected
+  file "$ROOT/Library/LaunchDaemons/com.uvendor.app.daemon.plist" 1024       # needs admin: Info
+  file "$L/Application Support/com.uvendor.app.bundled/x" 4096                # holds another app: Info
+  plist "$L/Application Support/com.uvendor.app.bundled/Other.app/Contents/Info.plist" CFBundleIdentifier org.unrelated.other
+  # Not this app's: Pro's files, a container whose record names another app, a launch agent whose
+  # label is Pro's, a library's cache, and an unrelated app.
+  for d in Caches "Application Support"; do file "$L/$d/com.uvendor.app.pro/x" 4096; done
+  plist "$L/Preferences/com.uvendor.app.pro.plist" CFBundleName "Vendor App Pro"
+  file "$L/Containers/com.uvendor.app.fake/Data/x" 4096
+  plist "$L/Containers/com.uvendor.app.fake/.com.apple.containermanagerd.metadata.plist" MCMMetadataIdentifier org.other.thing
+  plist "$L/LaunchAgents/helper.plist" Label com.uvendor.app.pro.agent
+  file "$L/Caches/org.sparkle-project.Sparkle/x" 4096
+  file "$L/Caches/com.unrelated.tool/x" 4096
+  # Refused: an Apple ID, an app outside Applications, a link to an app; a running app; two copies.
+  app "$A/Fake Safari.app" com.apple.fakesafari "Fake Safari"; mkdir -p "$A/Fake Safari.app/Contents/MacOS"
+  app "$L/Application Support/WebDeployed/Web Tool.app" com.fixture.webtool "Web Tool"; mkdir -p "$L/Application Support/WebDeployed/Web Tool.app/Contents/MacOS"
+  ln -s "Vendor App.app" "$A/Vendor Link.app"
+  app "$A/Busy.app" com.fixture.busy "Busy"; mkdir -p "$A/Busy.app/Contents/MacOS"
+  file "$L/Caches/com.fixture.busy/x" 4096
+  printf 'com.fixture.busy.helper|Busy Helper\n' > "$ROOT/running.txt"
+  app "$A/Twin.app" com.fixture.twin "Twin"; mkdir -p "$A/Twin.app/Contents/MacOS"
+  app "$H/Applications/Twin.app" com.fixture.twin "Twin"; mkdir -p "$H/Applications/Twin.app/Contents/MacOS"
+  file "$L/Caches/com.fixture.twin/x" 4096
+  echo "$ROOT"
+  exit 0
+fi
+
 # Installed and running apps (fixture-only inventory)
 app "$ROOT/Applications/Fixture App.app" com.fixture.installed "Fixture App"
 app "$ROOT/Applications/Fixture App.app/Contents/PlugIns/Share.appex" com.fixture.installed.share "Share"
@@ -95,12 +162,6 @@ file "$H/.config/tool/settings" 4096                 # a home dot-folder: Reveal
 
 # Leftovers (spec 9). Every app here is made up.
 L="$H/Library"
-plist() {  # path, then key/value pairs
-  local f="$1"; shift; mkdir -p "$(dirname "$f")"
-  { echo '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
-    while [ $# -gt 1 ]; do echo "<key>$1</key><string>$2</string>"; shift 2; done
-    echo '</dict></plist>'; } > "$f"
-}
 # An installed app's data, its embedded extension's data and a web-deployed app: never reported
 file "$L/Application Support/com.fixture.installed/db" 8192
 plist "$L/Preferences/com.fixture.installed.plist" CFBundleName "Fixture App"

@@ -17,7 +17,7 @@ SOURCES=(main.swift Views.swift Demo.swift CleanerModel.swift CleanerViews.swift
          Cleaner/Model.swift Cleaner/PathGuard.swift Cleaner/Keys.swift Cleaner/ScanEngine.swift
          Cleaner/InstalledApps.swift Cleaner/Rules.swift Cleaner/Actions.swift Cleaner/Permissions.swift
          Cleaner/SystemProbes.swift Cleaner/Headless.swift Cleaner/SpaceMap.swift
-         Cleaner/LeftoverMatcher.swift Cleaner/Leftovers.swift
+         Cleaner/LeftoverMatcher.swift Cleaner/Leftovers.swift Cleaner/Uninstaller.swift
          SpaceMapModel.swift SpaceMapViews.swift)
 # APPMON_DEBUG=1 compiles in the developer switches (fixture roots, headless scan). Release builds never set it.
 FLAGS=(-O)

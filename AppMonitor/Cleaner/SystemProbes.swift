@@ -212,3 +212,27 @@ final class SpotlightProbe: @unchecked Sendable {
         return box.count > 0 ? .found : .notFound
     }
 }
+
+extension CleanerConfig {
+    /// The uninstaller's probes (spec 10): other copies come from LaunchServices (not in fixture
+    /// mode) and the app folders; entitlements and processes are read the same way everywhere.
+    static func uninstallProbes(_ roots: Roots) -> UninstallProbes {
+        var p = UninstallProbes()
+        let fixture = fixtureRoot != nil
+        p.copies = { id in
+            var out = Set<String>()
+            if !fixture {
+                for u in NSWorkspace.shared.urlsForApplications(withBundleIdentifier: id) where !u.path.contains("/.Trash/") {
+                    out.insert(Uninstaller.located(u.path))
+                }
+            }
+            for dir in [roots.applications, roots.h("Applications")] {
+                Leftovers.nestedApps(Roots.canonical(dir), depth: 3) { app in
+                    if AppInventory.info(app)?.id.lowercased() == id.lowercased() { out.insert(Uninstaller.located(app)) }
+                }
+            }
+            return out.sorted()
+        }
+        return p
+    }
+}

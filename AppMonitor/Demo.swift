@@ -258,6 +258,44 @@ extension Demo {
 // MARK: - Leftovers demo (made up)
 
 extension Demo {
+    /// A made-up app being uninstalled (spec 10), with each kind of row.
+    static func uninstall() -> (UninstallTarget?, [Category]) {
+        let h = NSHomeDirectory()
+        let now = Date()
+        let id = "com.example.photoframe"
+        let app = AppInfo(id: id, name: "Photo Frame", path: "/Applications/Photo Frame.app", names: ["Photo Frame"])
+        func item(_ rel: String, _ mb: Double, _ risk: Risk, _ reason: String, pre: Bool = false, app: Bool = false) -> CleanItem {
+            var i = CleanItem(path: app ? rel : h + "/" + rel, name: (rel as NSString).lastPathComponent, size: Int64(mb * 1_048_576),
+                              newest: now.addingTimeInterval(-3 * 86_400), risk: risk, method: risk == .info ? .none : .trash,
+                              reason: reason, allowRoot: "", fileID: [])
+            i.preselect = pre
+            i.appBundle = app
+            return i
+        }
+        let t = UninstallTarget(app: app, ids: [id, id + ".widget"], groups: ["group.com.example.shared"])
+        let cats = [
+            Category(id: "U-APP", title: "Photo Frame", group: .uninstall, method: .trash, explanation: "The app itself", items: [
+                item("/Applications/Photo Frame.app", 412, .requested, "The app you chose (\(id))", app: true)]),
+            Category(id: "U-CACHE", title: "Caches, logs and saved state", group: .uninstall, method: .trash,
+                     explanation: "Re-created if you install the app again", items: [
+                item("Library/Caches/\(id)", 236, .safe, "Cache of \(id)"),
+                item("Library/Logs/\(id)", 3.1, .safe, "Logs of \(id)"),
+                item("Library/Saved Application State/\(id).savedState", 0.2, .safe, "Saved window state of \(id)")]),
+            Category(id: "U-DATA", title: "Settings and data", group: .uninstall, method: .trash,
+                     explanation: "Contains your settings and data", items: [
+                item("Library/Application Support/\(id)", 1290, .review, "App data of \(id). Contains your settings and data.", pre: true),
+                item("Library/Preferences/\(id).plist", 0.01, .review, "Settings file of \(id). Contains your settings and data.", pre: true)]),
+            Category(id: "U-MORE", title: "Containers, scripts and launch agents", group: .uninstall, method: .trash,
+                     explanation: "Not pre-selected: check each one", items: [
+                item("Library/Containers/\(id).widget", 18, .review, "App container of \(id).widget"),
+                item("Library/LaunchAgents/\(id).updater.plist", 0.01, .review, "Launch agent \(id).updater")]),
+            Category(id: "U-KEPT", title: "Not moved", group: .kept, method: .trash, explanation: "Shown so you know they exist", items: [
+                item("Library/Group Containers/group.com.example.shared", 54, .info,
+                     "Shared app data of the app group group.com.example.shared, listed in Photo Frame's entitlements. Shared with Photo Editor, so it stays.")]),
+        ]
+        return (t, cats)
+    }
+
     static func leftoverCategories() -> [Category] {
         let h = NSHomeDirectory()
         let now = Date()

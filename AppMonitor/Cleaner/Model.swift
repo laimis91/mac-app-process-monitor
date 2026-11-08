@@ -8,6 +8,7 @@ enum Method: String, Codable { case trash, tool, none }
 enum CategoryGroup: String, Codable {
     case general = "General", developer = "Developer"
     case leftovers = "Leftovers", possible = "Possible leftovers, check before removing"
+    case uninstall = "Files of this app", kept = "Shown only, not moved"
 }
 enum FDAStatus: String, Codable { case granted, denied, unknown }
 
@@ -33,10 +34,16 @@ struct CleanItem: Identifiable, Codable {
     var measurePath: String? = nil  // tool rows: the cache folder measured before and after
     var spaceMap = false            // picked in the Space map: checked by the Space-map guard (6.4)
     var inspect = false             // re-checked for always-protected contents (an app inside, …) when cleaned
+    var preselect = false           // uninstaller Review rows the user asked for by naming the app (spec 10)
+    var appBundle = false           // the app bundle itself (uninstaller): checked against the app roots (6.4)
 
     var selectable: Bool { risk != .info && note == nil }
-    /// S6: only Safe items moved to the Trash are pre-selected, never tool commands.
-    var preselected: Bool { selectable && risk == .safe && method == .trash && runningOwner == nil }
+    /// S6: only Safe and Requested items moved to the Trash are pre-selected, never tool commands.
+    /// Review items only when the uninstaller marks them (spec 10).
+    var preselected: Bool {
+        selectable && method == .trash && runningOwner == nil
+            && (risk == .safe || risk == .requested || (risk == .review && preselect))
+    }
 }
 
 struct ToolCommand: Codable {

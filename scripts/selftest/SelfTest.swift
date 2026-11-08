@@ -27,6 +27,8 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         leftoverScreen()
         leftoverDecide()
         leftoverScan()
+        uninstallRules()
+        uninstallScan()
         print("selftest: \(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
     }
@@ -134,6 +136,15 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         check(!item(.info, .none).selectable, "info not selectable")
         check(!item(.safe, .trash, running: "Xcode").preselected, "running owner not pre-selected")
         check(!item(.safe, .trash, note: "Needs Full Disk Access").selectable, "notice rows not selectable")
+        // Spec 5 and 10: Requested is pre-selected; Review only when the uninstaller marks it.
+        check(item(.requested, .trash).preselected, "requested pre-selected")
+        check(!item(.requested, .trash, running: "X").preselected, "requested, app running: not pre-selected")
+        var marked = item(.review, .trash); marked.preselect = true
+        check(marked.preselected, "marked review pre-selected")
+        var markedTool = item(.review, .tool); markedTool.preselect = true
+        check(!markedTool.preselected, "marked review tool not pre-selected")
+        var markedInfo = item(.info, .none); markedInfo.preselect = true
+        check(!markedInfo.preselected && !markedInfo.selectable, "marked info neither selectable nor pre-selected")
     }
 
     static func pathGuard() {
@@ -820,5 +831,156 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
                                            inventory: inv, roots: r, dryRun: true, now: Date.init)
             eq(Cleaner.clean([(g, g.items[0])], env: running).first?.reason, "Gone App is running", "running app at clean time: skipped")
         }
+    }
+
+    // MARK: Uninstaller (spec 10)
+
+    static func uninstallRules() {
+        let t = ["com.vendor.app", "com.vendor.login"]
+        let o: [(id: String, name: String)] = [("com.vendor.app.pro", "Pro"), ("com.other.app", "Other")]
+        eq(Uninstaller.owner(of: "com.vendor.app", target: t, others: o), .target, "own ID")
+        eq(Uninstaller.owner(of: "COM.Vendor.App.cache", target: t, others: o), .target, "dot-prefix, no case")
+        eq(Uninstaller.owner(of: "com.vendor.login", target: t, others: o), .target, "embedded ID")
+        eq(Uninstaller.owner(of: "com.vendor.app.pro", target: t, others: o), .other("Pro"), "longer installed ID wins")
+        eq(Uninstaller.owner(of: "com.vendor.app.pro.helper", target: t, others: o), .other("Pro"), "its helpers too")
+        eq(Uninstaller.owner(of: "com.vendor.apps", target: t, others: o), nil, "no partial component")
+        eq(Uninstaller.owner(of: "com.vendor", target: t, others: o), nil, "shorter key not matched")
+        eq(Uninstaller.owner(of: "com.vendor.login", target: t, others: [("com.vendor.login", "Suite")]), .other("Suite"),
+           "an ID another app also has: the other app wins")
+        eq(Uninstaller.kind(LeftoverPlace.named("caches")), .safe, "caches Safe")
+        eq(Uninstaller.kind(LeftoverPlace.named("preferences")), .data, "settings Review, pre-selected")
+        eq(Uninstaller.kind(LeftoverPlace.named("cookies")), .data, "cookies Review, pre-selected")
+        eq(Uninstaller.kind(LeftoverPlace.named("groupContainers")), .review, "group containers Review")
+        eq(Uninstaller.kind(LeftoverPlace.named("launchAgents")), .review, "launch agents Review")
+        eq(Uninstaller.kind(LeftoverPlace.named("sysLaunchDaemons")), .info, "/Library Info")
+        let a = AppInfo(id: "com.vendor.app", name: "Vendor App", path: "/x", names: ["Vendor App", "VendorApp", "App"])
+        eq(Uninstaller.nameKeys(a, others: []), ["vendorapp"], "name keys, short names left out")
+        eq(Uninstaller.nameKeys(a, others: ["Vendor-App"]), [], "a name another app has is not used")
+    }
+
+    static func uninstallScan() {
+        let fm = FileManager.default
+        let root = "/private/tmp/appmon-fixture-selftest-un-\(getpid())"
+        try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { _ = chmod(root + "/Applications/Locked", 0o755); try? fm.removeItem(atPath: root) }
+        guard let r = Roots.fixture(root) else { check(false, "uninstall fixture"); return }
+        func file(_ path: String, _ bytes: Int = 4096) {
+            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: Data(count: bytes))
+        }
+        func app(_ path: String, _ id: String, _ name: String) {
+            file(path + "/Contents/MacOS/x")
+            (["CFBundleIdentifier": id, "CFBundleName": name] as NSDictionary).write(toFile: path + "/Contents/Info.plist", atomically: true)
+        }
+        let A = r.applications, L = r.h("Library")
+        app(A + "/Vendor.app", "com.vendor.app", "Vendor")
+        app(A + "/Vendor.app/Contents/Library/LoginItems/Login.app", "com.vendor.login", "Login")
+        app(A + "/Vendor.app/Contents/XPCServices/Updater.xpc", "org.sparkle-project.Updater", "Updater")
+        app(A + "/Vendor.app/Contents/PlugIns/Widget.appex", "com.vendor.app.widget", "Widget")
+        app(A + "/Sub/Vendor Pro.app", "com.vendor.app.pro", "Vendor Pro")
+        app(A + "/Fake.app", "com.apple.fake", "Fake")
+        app(r.systemApplications + "/Sys.app", "com.fixture.sys", "Sys")
+        app(r.h("Applications/Mine.app"), "com.fixture.mine", "Mine")
+        app(L + "/Application Support/Web/Web.app", "com.fixture.web", "Web")
+        app(A + "/Self.app", "io.github.laimis91.appmonitor", "App Monitor")
+        app(A + "/Locked/Locked.app", "com.fixture.locked", "Locked")
+        _ = chmod(A + "/Locked", 0o555)
+        try? fm.createSymbolicLink(atPath: A + "/Link.app", withDestinationPath: A + "/Vendor.app")
+        file(A + "/NotApp.app/readme")
+        file(A + "/Phone.app/Wrapper/Phone.app/Info.plist")
+        try? fm.createSymbolicLink(atPath: A + "/Phone.app/WrappedBundle", withDestinationPath: "Wrapper/Phone.app")
+        let me = Uninstaller.selfIDs
+        eq(Uninstaller.refusal(A + "/Vendor.app", roots: r, selfIDs: me), nil, "app in Applications accepted")
+        eq(Uninstaller.refusal(A + "/Sub/Vendor Pro.app", roots: r, selfIDs: me), nil, "app in a subfolder accepted")
+        eq(Uninstaller.refusal(r.h("Applications/Mine.app"), roots: r, selfIDs: me), nil, "app in ~/Applications accepted")
+        check(Uninstaller.refusal(A + "/Fake.app", roots: r, selfIDs: me)?.contains("come with macOS") == true, "com.apple. refused anywhere")
+        check(Uninstaller.refusal(r.systemApplications + "/Sys.app", roots: r, selfIDs: me)?.contains("come with macOS") == true, "System/Applications refused")
+        check(Uninstaller.refusal(L + "/Application Support/Web/Web.app", roots: r, selfIDs: me)?.contains("own uninstaller") == true, "outside Applications refused")
+        check(Uninstaller.refusal(A + "/Self.app", roots: r, selfIDs: me)?.contains("itself") == true, "App Monitor refused")
+        check(Uninstaller.refusal(A + "/Locked/Locked.app", roots: r, selfIDs: me)?.contains("can't move") == true, "not movable by the user refused")
+        check(Uninstaller.refusal(A + "/Link.app", roots: r, selfIDs: me)?.contains("link") == true, "link refused")
+        check(Uninstaller.refusal(A + "/NotApp.app", roots: r, selfIDs: me)?.contains("isn't an app") == true, "folder named .app refused")
+        check(Uninstaller.refusal(A + "/Phone.app", roots: r, selfIDs: me)?.contains("iPhone or iPad") == true, "iOS app wrapper refused")
+        check(Uninstaller.refusal(A, roots: r, selfIDs: me) != nil, "Applications itself refused")
+        let choices = Uninstaller.choices(r, selfIDs: me)
+        check(!choices.contains { $0.app.id.hasPrefix("com.apple.") }, "Apple apps not offered")
+        check(choices.contains { $0.app.id == "com.vendor.app" && $0.refusal == nil }, "Vendor offered")
+        check(choices.contains { $0.app.id == "io.github.laimis91.appmonitor" && $0.refusal != nil }, "App Monitor shown as refused")
+
+        for d in ["Caches", "Application Support", "Logs"] { file(L + "/\(d)/com.vendor.app/x") }
+        file(L + "/Caches/com.vendor.app.widget/x")
+        file(L + "/Caches/com.vendor.login/x")
+        file(L + "/Caches/com.vendor.app.pro/x")
+        file(L + "/Caches/org.sparkle-project.Updater/x")
+        file(L + "/Caches/com.vendor.apps/x")
+        file(L + "/Containers/com.vendor.app.widget/Data/x")
+        (["MCMMetadataIdentifier": "com.vendor.app.widget"] as NSDictionary).write(toFile: L + "/Containers/com.vendor.app.widget/.com.apple.containermanagerd.metadata.plist", atomically: true)
+        file(L + "/Containers/com.vendor.app/Data/x")    // no metadata: not matched
+        file(L + "/Group Containers/group.com.vendor.app/x")
+        file(L + "/Group Containers/TEAMID1234.shared/x")
+        file(L + "/Application Support/com.vendor.app.tool/Tool.app/Contents/MacOS/t")
+        try? fm.createDirectory(atPath: L + "/LaunchAgents", withIntermediateDirectories: true)
+        (["Label": "com.vendor.app.agent"] as NSDictionary).write(toFile: L + "/LaunchAgents/agent.plist", atomically: true)
+        (["Label": "com.vendor.app.pro.agent"] as NSDictionary).write(toFile: L + "/LaunchAgents/com.vendor.app.x.plist", atomically: true)
+        try? fm.createSymbolicLink(atPath: L + "/Caches/com.vendor.app.link", withDestinationPath: r.home)
+        file(L + "/Caches/com.vendor.app.ignored/x")
+        file(r.library + "/LaunchDaemons/com.vendor.app.daemon.plist")
+
+        var probes = UninstallProbes()
+        probes.groups = { p in
+            if p.hasSuffix("/Vendor.app") { return ["group.com.vendor.app", "teamid1234.shared"] }
+            if p.hasSuffix("/Vendor Pro.app") { return ["teamid1234.shared"] }
+            return []
+        }
+        probes.processesInside = { _ in [] }
+        func ctx(fda: FDAStatus = .granted, running: [RunningApp] = []) -> ScanContext {
+            ScanContext(roots: r, limits: AgeLimits(), fda: fda, ignore: [(L + "/Caches/com.vendor.app.ignored").lowercased()],
+                        inventory: AppInventory(roots: r, lookup: nil, running: { running }), running: running,
+                        tools: ToolLocator(dirs: [], xcodeSelectOK: true), cancel: CancelFlag(), now: Date())
+        }
+        guard let plan = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(), probes: probes) else { check(false, "plan"); return }
+        eq(plan.target.ids.first, "com.vendor.app", "target IDs start with the app's")
+        eq(Set(plan.target.ids), ["com.vendor.app", "com.vendor.login", "com.vendor.app.widget"], "target IDs: library XPC left out")
+        let items = Dictionary(uniqueKeysWithValues: plan.categories.flatMap(\.items).map { ($0.path.replacingOccurrences(of: root + "/", with: ""), $0) })
+        let H = "home/Library/"
+        eq(Set(items.keys), Set(["Applications/Vendor.app", H + "Caches/com.vendor.app", H + "Application Support/com.vendor.app",
+                                 H + "Logs/com.vendor.app", H + "Caches/com.vendor.app.widget", H + "Caches/com.vendor.login",
+                                 H + "Containers/com.vendor.app.widget", H + "Group Containers/group.com.vendor.app",
+                                 H + "Group Containers/TEAMID1234.shared", H + "Application Support/com.vendor.app.tool",
+                                 H + "LaunchAgents/agent.plist", "Library/LaunchDaemons/com.vendor.app.daemon.plist"]), "related items")
+        let bundle = items["Applications/Vendor.app"]
+        check(bundle?.appBundle == true && bundle?.risk == .requested && bundle?.preselected == true, "bundle Requested, pre-selected")
+        eq(bundle?.allowRoot, Roots.canonical(A), "bundle's allow root is Applications")
+        eq(items[H + "Application Support/com.vendor.app"]?.preselected, true, "app data pre-selected")
+        eq(items[H + "Application Support/com.vendor.app"]?.risk, .review, "app data Review")
+        eq(items[H + "Group Containers/group.com.vendor.app"]?.preselected, false, "group container not pre-selected")
+        eq(items[H + "Group Containers/TEAMID1234.shared"]?.risk, .info, "group claimed by another app: Info")
+        check(items[H + "Group Containers/TEAMID1234.shared"]?.reason.contains("Shared with Vendor Pro") == true, "shared reason")
+        eq(items[H + "Application Support/com.vendor.app.tool"]?.risk, .info, "item holding an app: Info")
+        eq(items["Library/LaunchDaemons/com.vendor.app.daemon.plist"]?.risk, .info, "/Library: Info")
+        check(plan.categories.flatMap(\.items).allSatisfy { $0.ageLimitDays == nil }, "no age limits")
+
+        let noFDA = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(fda: .denied), probes: probes)
+        check(noFDA?.categories.contains { $0.id == Uninstaller.fdaID } == true, "no FDA: notice")
+        check(noFDA?.categories.flatMap(\.items).contains { $0.path.contains("Containers/") } == false, "no FDA: containers not entered")
+        let busy = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(running: [RunningApp(id: "com.vendor.login", name: "Login")]), probes: probes)
+        eq(busy?.target.running, ["Login"], "running helper found")
+        check(busy?.categories.flatMap(\.items).allSatisfy { !$0.preselected } == true, "running: nothing pre-selected")
+        var inside = probes; inside.processesInside = { _ in ["tool"] }
+        eq(Uninstaller.plan(A + "/Vendor.app", ctx: ctx(), probes: inside)?.target.running, ["tool"], "process inside the bundle counts")
+        let pro = Uninstaller.plan(A + "/Sub/Vendor Pro.app", ctx: ctx(), probes: probes)
+        check(pro?.categories.flatMap(\.items).contains { $0.path.hasSuffix("/Caches/com.vendor.app") } == false, "Pro: base app's data not listed")
+        check(pro?.categories.flatMap(\.items).contains { $0.path.hasSuffix("/LaunchAgents/com.vendor.app.x.plist") } == true, "Pro: agent by label")
+
+        // Path guard: app bundles only through the app roots, and only with the bundle flag (6.4).
+        let g = PathGuard(roots: r)
+        eq(g.check(A + "/Vendor.app", allowRoot: A, appBundle: true), nil, "bundle allowed in Applications")
+        eq(g.check(A + "/Sub/Vendor Pro.app", allowRoot: A, appBundle: true), nil, "bundle in a subfolder allowed")
+        check(g.check(A + "/Vendor.app", allowRoot: A) != nil, "Applications isn't a rule root")
+        check(g.check(A + "/Sub", allowRoot: A, appBundle: true) != nil, "only .app folders")
+        check(g.check(A, allowRoot: A, appBundle: true) != nil, "Applications itself denied")
+        check(g.check(L + "/Caches/com.vendor.app", allowRoot: A, appBundle: true) != nil, "data outside Applications")
+        check(g.check(L + "/Caches/com.vendor.app", allowRoot: L + "/Caches", appBundle: true) != nil, "bundle flag needs an app root")
+        check(g.check(r.systemApplications + "/Sys.app", allowRoot: r.systemApplications, appBundle: true) != nil, "System/Applications denied")
     }
 }

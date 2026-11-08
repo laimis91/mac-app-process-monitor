@@ -22,6 +22,7 @@ struct RunningApp: Codable, Equatable {
 final class AppInventory {
     private(set) var apps: [String: AppInfo] = [:]       // lowercased bundle ID → app
     private(set) var embedded: [String: AppInfo] = [:]   // embedded bundle ID → its outer app
+    private(set) var embeddedAll: [String: [AppInfo]] = [:]   // embedded bundle ID → every app that embeds it
     let lookup: ((String) -> AppInfo?)?                  // LaunchServices probe, real mode only
     let running: () -> [RunningApp]
 
@@ -45,7 +46,10 @@ final class AppInventory {
             if n.lowercased().hasSuffix(".app") {
                 if let a = Self.info(p) {
                     apps[a.id.lowercased()] = a
-                    for e in Self.embeddedIDs(p) where apps[e.lowercased()] == nil { embedded[e.lowercased()] = a }
+                    for e in Self.embeddedIDs(p) {
+                        embeddedAll[e.lowercased(), default: []].append(a)
+                        if apps[e.lowercased()] == nil { embedded[e.lowercased()] = a }
+                    }
                 }
             } else {
                 scan(p, depth: depth - 1)
@@ -66,8 +70,11 @@ final class AppInventory {
     }
 
     /// Bundle IDs of helpers, extensions and login items inside an app (probe 6).
-    static func embeddedIDs(_ app: String) -> [String] {
-        var out: [String] = []
+    static func embeddedIDs(_ app: String) -> [String] { embeddedBundles(app).map(\.id) }
+
+    /// The helpers, extensions and login items inside an app, with their paths.
+    static func embeddedBundles(_ app: String) -> [(id: String, path: String)] {
+        var out: [(id: String, path: String)] = []
         let c = app + "/Contents"
         for sub in ["PlugIns", "Library/LoginItems", "Helpers", "XPCServices", "Library/LaunchServices",
                     "Frameworks"] {
@@ -77,7 +84,7 @@ final class AppInventory {
                 let p = c + "/" + sub + "/" + n
                 if let d = NSDictionary(contentsOfFile: p + "/Contents/Info.plist") ?? NSDictionary(contentsOfFile: p + "/Info.plist"),
                    let id = d["CFBundleIdentifier"] as? String {
-                    out.append(id)
+                    out.append((id, p))
                 }
             }
         }

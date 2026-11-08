@@ -40,8 +40,14 @@ struct CleanerView: View {
     @EnvironmentObject var m: CleanerModel          // the junk list; it owns the leftovers list
     @EnvironmentObject var space: SpaceMapModel
 
-    /// The list shown in the Junk or Leftovers view.
-    var list: CleanerModel { m.view == .leftovers ? m.leftovers : m }
+    /// The list shown in the Junk, Leftovers or Uninstaller view.
+    var list: CleanerModel {
+        switch m.view {
+        case .leftovers: return m.leftovers
+        case .uninstall: return m.uninstaller
+        default: return m
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -59,13 +65,17 @@ struct CleanerView: View {
                 Picker("", selection: $m.view) {
                     ForEach(DiskView.allCases, id: \.self) { Text($0.rawValue) }
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 260)
+                .pickerStyle(.segmented).labelsHidden().frame(width: 360)
                 if m.view == .spaceMap { SpaceToolbar() } else { ResultsToolbar().environmentObject(list) }
             }
             .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 8)
 
             VStack(spacing: 0) {
-                if m.view == .spaceMap { SpaceMapView() } else { ResultsList().environmentObject(list) }
+                switch m.view {
+                case .spaceMap: SpaceMapView()
+                case .uninstall: UninstallView().environmentObject(m.uninstaller)
+                default: ResultsList().environmentObject(list)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
@@ -85,11 +95,23 @@ struct CleanerView: View {
             if CleanerConfig.fixtureRoot != nil {
                 if let e = env["APPMON_EXPAND"] { list.expanded = Set(e.split(separator: ",").map(String.init)); list.possibleOpen = true }
                 if env["APPMON_AUTOSCAN"] == "1" { m.view == .spaceMap ? space.scan(fda: m.fda) : list.scan() }
+                // APPMON_UNINSTALL=Applications/X.app picks that fixture app in the Uninstaller.
+                if let u = env["APPMON_UNINSTALL"], let r = CleanerConfig.fixtureRoot { m.view = .uninstall; m.uninstaller.choose(r + "/" + u) }
             }
             #endif
         }
         .background(ResultSheets().environmentObject(m))
         .background(ResultSheets().environmentObject(m.leftovers))
+        .background(ResultSheets().environmentObject(m.uninstaller))
+        // Spec 10: an app dropped anywhere on the Disk tab opens it in the Uninstaller.
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            guard let pr = providers.first else { return false }
+            _ = pr.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, url.pathExtension.lowercased() == "app" else { return }
+                Task { @MainActor in m.view = .uninstall; m.uninstaller.choose(url.path) }
+            }
+            return true
+        }
     }
 
     var footer: String {
@@ -98,6 +120,8 @@ struct CleanerView: View {
             return "Sizes are space used on disk, as du counts it  ·  Only items you pick one at a time can go to the Trash; everything in ~/Library is Reveal only"
         case .leftovers:
             return "Leftovers are never pre-selected: check each one  ·  Sizes are upper estimates  ·  Moved items stay in the Trash until you empty it"
+        case .uninstall:
+            return "Drop an app onto this window, or pick one  ·  The app and its files go to the Trash, so Put Back works  ·  Apps that come with macOS can't be removed"
         case .junk:
             return "Sizes are upper estimates: APFS clones and snapshots can make the real gain smaller  ·  Moved items stay in the Trash until you empty it"
         }
@@ -124,6 +148,10 @@ struct ResultsToolbar: View {
             if m.scanning {
                 ToolButton(icon: "stop.fill", text: "Stop") { m.stop() }
                 ProgressView().controlSize(.small)
+            } else if m.kind == .uninstall {
+                if m.target != nil {
+                    ToolButton(icon: "chevron.left", text: "Choose another app") { m.chooseAnother() }.disabled(m.cleaning)
+                }
             } else {
                 ToolButton(icon: "magnifyingglass.circle", text: m.lastScan == nil ? "Scan" : "Scan again") { m.scan() }
                     .disabled(m.cleaning)
@@ -139,21 +167,32 @@ struct ResultsToolbar: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.stroke))
             .frame(maxWidth: 240)
+            if m.kind != .uninstall || m.target != nil {
             Text("Selected: \(byteText(m.selectedSize))").font(.callout.monospaced()).foregroundStyle(Theme.text)
             Button {
                 m.confirming = true
             } label: {
-                HStack(spacing: 5) { Image(systemName: "trash"); Text(m.kind == .leftovers ? "Move to Trash…" : "Clean…") }
+                HStack(spacing: 5) {
+                    Image(systemName: "trash")
+                    Text(m.kind == .leftovers ? "Move to Trash…" : m.kind == .uninstall ? "Uninstall…" : "Clean…")
+                }
                     .font(.callout.weight(.semibold))
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 8).fill(m.selected.isEmpty ? Color.white.opacity(0.06) : Theme.purple.opacity(0.8)))
             }
             .buttonStyle(.plain)
             .disabled(m.selected.isEmpty || m.scanning || m.cleaning)
+            }
         }
     }
 
     var lastScanText: String {
+        if m.kind == .uninstall {
+            guard let t = m.target else {
+                return m.loadingChoices ? "Listing apps…" : "Pick an app to uninstall, or drop one onto this window."
+            }
+            return t.app.id
+        }
         guard let d = m.lastScan else {
             return m.kind == .leftovers ? "Finds data left behind by apps that are no longer on this Mac."
                 : "Finds caches, logs, temporary files and developer caches you can remove."
@@ -221,7 +260,8 @@ struct ResultsList: View {
 
     var rows: [Row] {
         var out: [Row] = []
-        let groups: [CategoryGroup] = m.kind == .leftovers ? [.leftovers, .possible] : [.general, .developer]
+        let groups: [CategoryGroup] = m.kind == .leftovers ? [.leftovers, .possible]
+            : m.kind == .uninstall ? [.uninstall, .kept] : [.general, .developer]
         for g in groups {
             let cats = visible.filter { $0.group == g }
             guard !cats.isEmpty else { continue }
@@ -284,10 +324,139 @@ struct ResultsList: View {
                 }
                 .padding(.leading, 60).padding(.vertical, 6)
             case .empty(let c):
-                Text(m.kind == .leftovers ? c.notice.map { "\($0). \(c.explanation)" } ?? "Nothing to clean here."
+                Text(m.kind != .junk ? c.notice.map { "\($0). \(c.explanation)" } ?? "Nothing to clean here."
                      : c.notice ?? "Nothing to clean here.").font(.caption).foregroundStyle(Theme.dim)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 60).padding(.bottom, 8)
             }
+        }
+    }
+}
+
+// MARK: - Uninstaller (spec 10)
+
+struct UninstallView: View {
+    @EnvironmentObject var m: CleanerModel        // the uninstaller's list
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let r = m.refusal {
+                HStack(spacing: 8) {
+                    Image(systemName: "hand.raised.fill").foregroundStyle(Theme.orange)
+                    Text(r).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button { m.refusal = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(Theme.dim)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(Theme.orange.opacity(0.10))
+            }
+            if let t = m.target {
+                TargetHeader(target: t)
+                ResultsList()
+            } else if m.scanning {
+                ResultsList()
+            } else {
+                AppPicker()
+            }
+        }
+        .onAppear { if m.target == nil && m.choices.isEmpty { m.loadChoices() } }
+    }
+}
+
+struct TargetHeader: View {
+    let target: UninstallTarget
+    @EnvironmentObject var m: CleanerModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: target.app.path)).resizable().frame(width: 36, height: 36)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(target.app.name).font(.system(size: 15, weight: .semibold))
+                    Text(tilde(target.app.path)).font(.caption.monospaced()).foregroundStyle(Theme.cyan.opacity(0.7)).lineLimit(1)
+                }
+                Spacer()
+                Text("\(target.ids.count) bundle ID\(target.ids.count == 1 ? "" : "s")").font(.caption).foregroundStyle(Theme.dim)
+                    .help(target.ids.joined(separator: "\n"))
+            }
+            if !target.running.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.orange)
+                    Text("\(target.running.joined(separator: ", ")) \(target.running.count == 1 ? "is" : "are") running. Quit \(target.app.name) to uninstall it; nothing is selected until then.")
+                        .font(.callout).fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button(m.dryRun ? "Quit (off in dry run)" : "Quit \(target.app.name)") { m.quitTarget() }.disabled(m.dryRun)
+                    Button("Check again") { m.scan() }
+                }
+            }
+            if !target.otherCopies.isEmpty {
+                Label("Another copy is on this Mac: \(target.otherCopies.map(tilde).joined(separator: ", ")). It may use the same settings and data, so check what stays selected.",
+                      systemImage: "square.on.square").font(.callout).foregroundStyle(Theme.yellow).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(Color.white.opacity(0.03))
+    }
+}
+
+struct AppPicker: View {
+    @EnvironmentObject var m: CleanerModel
+
+    var shown: [AppChoice] {
+        let q = m.search.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return m.choices }
+        return m.choices.filter { $0.app.name.lowercased().contains(q) || $0.app.id.lowercased().contains(q) }
+    }
+
+    var body: some View {
+        if m.choices.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: m.loadingChoices ? "hourglass" : "app.badge.checkmark").font(.system(size: 34)).foregroundStyle(Theme.accent)
+                Text(m.loadingChoices ? "Listing apps…" : "No apps found in Applications").font(.headline)
+                Text("Drop an app onto this window to see everything it would remove.").font(.callout).foregroundStyle(Theme.dim)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    HStack {
+                        Text("APPS IN APPLICATIONS").font(.caption2.weight(.bold)).tracking(1.2).foregroundStyle(Theme.faint)
+                        Spacer()
+                        Text("Nothing is removed until you confirm").font(.caption2).foregroundStyle(Theme.faint)
+                    }
+                    .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 4)
+                    ForEach(shown) { c in AppChoiceRow(choice: c) }
+                }
+            }
+        }
+    }
+}
+
+struct AppChoiceRow: View {
+    let choice: AppChoice
+    @EnvironmentObject var m: CleanerModel
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: choice.app.path)).resizable().frame(width: 24, height: 24)
+                .opacity(choice.refusal == nil ? 1 : 0.4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(choice.app.name).font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(choice.refusal == nil ? Theme.text : Theme.dim)
+                Text(choice.refusal ?? tilde(choice.app.path)).font(.caption).foregroundStyle(Theme.dim).lineLimit(1)
+            }
+            Spacer()
+            if choice.refusal == nil {
+                Text("Show files").font(.caption).foregroundStyle(hover ? Theme.purple : Theme.faint)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .background(hover && choice.refusal == nil ? Theme.purple.opacity(0.08) : .clear)
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { if choice.refusal == nil { m.choose(choice.app.path) } }
+        .contextMenu {
+            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: choice.app.path)]) }
         }
     }
 }
@@ -329,7 +498,9 @@ struct ReclaimPanel: View {
                 }
                 Text("\(byteText(m.selectedSize)) selected in \(m.selected.count) item\(m.selected.count == 1 ? "" : "s")")
                     .font(.callout).foregroundStyle(Theme.dim)
-                Text(m.lastScan == nil ? "Run a scan to find out"
+                Text(m.kind == .uninstall ? (m.target == nil ? "Pick an app to see what uninstalling it frees"
+                        : "The app, its caches and its settings are pre-selected. Containers and agents are yours to pick.")
+                     : m.lastScan == nil ? "Run a scan to find out"
                      : m.kind == .leftovers ? "Leftovers are never pre-selected. Check each one before removing it."
                      : "Safe items are pre-selected. Review items are yours to pick.")
                     .font(.caption).foregroundStyle(Theme.faint)
@@ -421,7 +592,7 @@ struct CategoryRow: View {
                         Button("Open Settings") { m.openFDASettings() }.buttonStyle(.link).font(.caption)
                     }
                 }
-                Chip(text: risk.rawValue.uppercased(), color: risk.color).frame(width: 92, alignment: .trailing)
+                Chip(text: risk.rawValue.uppercased(), color: risk.color).fixedSize().frame(width: 110, alignment: .trailing)
                 Text(sizeText).font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .frame(width: 90, alignment: .trailing)
             }
@@ -473,6 +644,13 @@ struct CategoryRow: View {
         case "J-UNITY", "J-UNITY-UPM": return "gamecontroller"
         case Leftovers.fdaID: return "lock"
         case Leftovers.spotlightID: return "magnifyingglass"
+        case Uninstaller.fdaID: return "lock"
+        case "U-APP": return "app"
+        case "U-CACHE": return "shippingbox"
+        case "U-DATA": return "gearshape"
+        case "U-MORE": return "shippingbox.and.arrow.backward"
+        case "U-NAMED": return "questionmark.folder"
+        case "U-KEPT": return "lock.shield"
         default:
             if category.id.hasPrefix("L:") { return "app.dashed" }
             return category.method == .tool ? "terminal" : "folder"
@@ -524,7 +702,7 @@ struct ItemRow: View {
                 Button("Copy path") { copy(shown) }
             }
             if let t = category.tool { Button("Copy command") { copy(t.command.joined(separator: " && ")) } }
-            if item.method == .trash {
+            if item.method == .trash && !item.appBundle {
                 Divider()
                 Button("Always ignore this item") { m.ignoreItem(item) }
             }
@@ -550,7 +728,18 @@ struct ConfirmSheet: View {
         let trash = pairs.filter { $0.1.method == .trash }
         let tools = pairs.filter { $0.1.method == .tool }
         VStack(alignment: .leading, spacing: 14) {
-            Text("Clean \(pairs.count) item\(pairs.count == 1 ? "" : "s"), up to \(byteText(m.selectedSize))?").font(.title3.weight(.semibold))
+            if m.kind == .uninstall, let t = m.target {
+                Text("Uninstall \(t.app.name)? \(pairs.count) item\(pairs.count == 1 ? "" : "s"), up to \(byteText(m.selectedSize))").font(.title3.weight(.semibold))
+                if !pairs.contains(where: { $0.1.appBundle }) {
+                    Label("The app itself isn't selected, so only its files are moved.", systemImage: "info.circle").foregroundStyle(Theme.yellow)
+                }
+                if !t.otherCopies.isEmpty {
+                    Label("Another copy of \(t.app.name) is on this Mac (\(t.otherCopies.map(tilde).joined(separator: ", "))). It may use the same settings and data: only the files you keep selected are moved.",
+                          systemImage: "exclamationmark.triangle").foregroundStyle(Theme.orange).fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text("Clean \(pairs.count) item\(pairs.count == 1 ? "" : "s"), up to \(byteText(m.selectedSize))?").font(.title3.weight(.semibold))
+            }
             if !trash.isEmpty {
                 Label("\(trash.count) moved to the Trash, \(byteText(trash.reduce(0) { $0 + $1.1.size })). Finder's Put Back returns them to where they were.",
                       systemImage: "trash").foregroundStyle(Theme.text)
@@ -587,7 +776,7 @@ struct ConfirmSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Clean", role: .destructive) { dismiss(); m.clean() }
+                Button(m.kind == .junk ? "Clean" : "Move to Trash", role: .destructive) { dismiss(); m.clean() }
             }
         }
         .padding(20)
@@ -623,7 +812,7 @@ struct ResultSheet: View {
         let planned = o.filter { $0.status == .planned }
         let skipped = o.filter { $0.status == .skipped || $0.status == .failed }
         VStack(alignment: .leading, spacing: 12) {
-            Text(m.lastRunWasDry ? "Dry run finished" : "Cleaning finished").font(.title3.weight(.semibold))
+            Text(m.lastRunWasDry ? "Dry run finished" : m.kind == .uninstall ? "Uninstall finished" : "Cleaning finished").font(.title3.weight(.semibold))
             if !moved.isEmpty {
                 Label("\(byteText(moved.reduce(0) { $0 + $1.size })) moved to the Trash (\(moved.count) items)", systemImage: "trash")
             }
