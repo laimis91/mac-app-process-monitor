@@ -675,8 +675,8 @@ struct RootView: View {
         }
         .padding(.leading, 76)   // sits right of the window buttons
         .padding(.trailing, 18)
-        .frame(height: 34)
-        .padding(.top, 6).padding(.bottom, 4)
+        .frame(height: 32)
+        .padding(.bottom, 12)   // centre line (16pt down) matches the window buttons
     }
 }
 
