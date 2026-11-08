@@ -2,6 +2,14 @@
 AppMonitor/App Monitor.app/
 *.zip
 
+# Signing material: certificates, keys and keychains never go in the repo
+*.p12
+*.pfx
+*.pem
+*.key
+*.cer
+*.keychain*
+
 # macOS
 .DS_Store
 

@@ -380,15 +380,17 @@ enum Rules {
                  explanation: "Unused build cache and dangling images. Volumes are never touched."),
     ]
 
+    /// No tool runs during a scan (spec 6.5): a tool row is shown when the tool's executable passes
+    /// the lookup and its cache folder exists.
     static func toolCategory(_ t: ToolRule, _ ctx: ScanContext) -> Category? {
-        guard let exe = ctx.tools.find(t.tool) else { return nil }
+        guard let (exe, place) = ctx.tools.locate(t.tool) else { return nil }
         let path = "tool://" + t.id         // unique ID; the folder it shrinks is measurePath
         var measurePath: String? = nil
         var m = Measure()
         var sizeUnknown = false
         if t.id == "J-DOCKER" {
-            // Needs a running Docker; there is no folder to measure.
-            guard ToolRunner.run(exe, ["info"], timeout: 8).status == 0 else { return nil }
+            // There is no folder to measure, and whether Docker is running isn't asked: the
+            // command reports an error if it isn't.
             sizeUnknown = true
         } else {
             guard let dir = t.cacheDirs.map({ ctx.roots.h($0) }).first(where: { ScanEngine.lstatInfo($0) != nil })
@@ -402,26 +404,34 @@ enum Rules {
         item.measurePath = measurePath
         var cmd = ToolCommand(tool: t.tool, commands: t.commands, preview: t.preview)
         cmd.executable = exe
+        cmd.place = place
         return Category(id: t.id, title: t.title, group: .developer, method: .tool, explanation: t.explanation,
                         items: [item], tool: cmd)
     }
 
+    /// Shown when xcrun passes the lookup and there are simulators. xcrun isn't run during the scan
+    /// (spec 6.5), so how many are unavailable is known only when the command runs. A simulator
+    /// that isn't shut down, by its device.plist, blocks the row.
     static func simulators(_ ctx: ScanContext) -> Category? {
-        guard let exe = ctx.tools.find("xcrun") else { return nil }
-        let list = ToolRunner.run(exe, ["simctl", "list", "devices"], timeout: 30)
-        guard list.status == 0 else { return nil }
-        let lines = list.output.split(separator: "\n")
-        let unavailable = lines.filter { $0.contains("(unavailable") }.count
-        guard unavailable > 0 else { return nil }
-        let booted = lines.contains { $0.contains("(Booted)") }
+        guard let (exe, place) = ctx.tools.locate("xcrun") else { return nil }
+        let devices = ctx.roots.h("Library/Developer/CoreSimulator/Devices")
+        guard case .ok(let names) = ScanEngine.children(devices) else { return nil }
+        var any = false, busy = false
+        for n in names {
+            guard let d = NSDictionary(contentsOfFile: devices + "/" + n + "/device.plist") else { continue }
+            any = true
+            if (d["state"] as? Int) != 1 { busy = true }      // 1 = shut down; anything else, or no state, counts as running
+        }
+        guard any else { return nil }
         var item = CleanItem(path: "tool://J-XC-SIM", name: "Unavailable simulators", size: 0, newest: nil,
                              risk: .review, method: .tool,
-                             reason: "\(unavailable) simulator\(unavailable == 1 ? "" : "s") for runtimes no longer installed. Deletes those simulators' data too.",
+                             reason: "Simulators for runtimes no longer installed, if there are any. Deletes those simulators' data too.",
                              scope: .none, fileID: [], owners: [xcode])
         item.sizeUnknown = true
-        item.runningOwner = blockedBy([xcode], ctx) ?? (booted ? "A booted simulator" : nil)
+        item.runningOwner = blockedBy([xcode], ctx) ?? (busy ? "A booted simulator" : nil)
         var cmd = ToolCommand(tool: "xcrun", commands: [["simctl", "delete", "unavailable"]], preview: nil)
         cmd.executable = exe
+        cmd.place = place
         return Category(id: "J-XC-SIM", title: "Unavailable simulators", group: .developer, method: .tool,
                         explanation: "Simulators whose iOS version is no longer installed.", items: [item], tool: cmd)
     }

@@ -1,12 +1,14 @@
 # Builds App Monitor and publishes it as a GitHub release when a version tag is pushed.
 #   git tag v1.2.0 && git push origin v1.2.0
 #
-# Release builds are signed with the self-signed "App Monitor Signing" certificate, so macOS
-# keeps Full Disk Access across updates (docs/specs/disk-cleaner.md section 11). The workflow
-# needs two repository secrets (README, "Signing"):
+# Release builds are signed with the self-signed "App Monitor Signing" certificate and the
+# hardened runtime, so macOS keeps Full Disk Access across updates (docs/specs/disk-cleaner.md
+# section 11). The job runs in the "release" environment and needs two secrets there (README,
+# "Signing"):
 #   APPMON_SIGN_P12           the certificate and private key, as a base64-encoded .p12
 #   APPMON_SIGN_P12_PASSWORD  the .p12 password
-# Without them the workflow fails before building: it never publishes an ad-hoc build.
+# Without them the workflow fails before building: it never publishes an ad-hoc build. It also
+# refuses tags on commits that aren't on main.
 name: Release
 
 on:
@@ -14,11 +16,16 @@ on:
     tags: ["v*.*.*"]
 
 permissions:
-  contents: write   # create the release and upload the zip
+  contents: read
 
 jobs:
   release:
     runs-on: macos-15
+    environment: release   # the signing secrets live in this environment (README, Signing)
+    permissions:
+      contents: write       # create the release and upload the zip
+      id-token: write       # build provenance attestation
+      attestations: write
     defaults:
       run:
         shell: bash   # bash --noprofile --norc -eo pipefail: a failing command anywhere in a pipe fails the step
@@ -26,6 +33,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4.4.0
         with:
           persist-credentials: false
+          fetch-depth: 0   # full history, for the main ancestry check
+
+      - name: Check the tag is on main
+        run: |
+          TAGGED="$(git rev-parse HEAD)"
+          if ! git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main; then
+            echo "::error::Couldn't fetch origin main to check the tag. Nothing was published."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$TAGGED" refs/remotes/origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME points to $TAGGED, which is not on main. Only commits on main are released. Nothing was published."
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME ($TAGGED) is on main."
 
       - name: Check signing secrets
         env:
@@ -33,7 +54,7 @@ jobs:
           P12_PASSWORD: ${{ secrets.APPMON_SIGN_P12_PASSWORD }}
         run: |
           if [ -z "$P12" ] || [ -z "$P12_PASSWORD" ]; then
-            echo "::error::Signing secrets APPMON_SIGN_P12 and APPMON_SIGN_P12_PASSWORD are not set. See README, Signing. Nothing was published."
+            echo "::error::Signing secrets APPMON_SIGN_P12 and APPMON_SIGN_P12_PASSWORD are not visible to this job. It runs in the \"release\" environment: add both as environment secrets of \"release\" (Settings → Environments → release → Environment secrets), and delete the repository-level copies. See README, Signing. Nothing was published."
             exit 1
           fi
 
@@ -106,29 +127,76 @@ jobs:
             echo "::error::Release build has no stable designated requirement: $REQ"
             exit 1
           fi
-          # developer-only switches must not be in a release build (Cleaner/SystemProbes.swift, Cleaner/Headless.swift)
+          # hardened runtime on, so no other process can load code into the app and use its Full Disk Access
+          CD="$(codesign -dv "$APP" 2>&1 | grep '^CodeDirectory ' || true)"
+          if [[ "$CD" != *"flags="*runtime* ]]; then
+            echo "::error::Release build is not signed with the hardened runtime: ${CD:-no CodeDirectory}"
+            exit 1
+          fi
+          ENTS="$RUNNER_TEMP/appmon-entitlements.plist"
+          codesign -d --entitlements - --xml "$APP" > "$ENTS" 2>/dev/null || true
+          if [ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.automation.apple-events" "$ENTS" 2>/dev/null)" != "true" ]; then
+            echo "::error::Release build lacks the com.apple.security.automation.apple-events entitlement"
+            exit 1
+          fi
+          if grep -qE 'disable-library-validation|allow-dyld-environment-variables' "$ENTS"; then
+            echo "::error::Release build has an entitlement that weakens the hardened runtime"
+            exit 1
+          fi
+          # developer-only switches must not be in a release build (Cleaner/SystemProbes.swift, Cleaner/Headless.swift, Demo.swift).
+          # Swift stores string literals of 15 bytes or fewer inside the code, not as C strings, so
+          # `strings` can't see short names such as APPMON_DEMO or APPMON_CAPTURE: for those this
+          # only catches longer literals that contain them (usage text, messages).
           BIN="$APP/Contents/MacOS/AppMonitor"
           STRINGS="$RUNNER_TEMP/appmon-strings.txt"
           if ! strings "$BIN" > "$STRINGS" || [ ! -s "$STRINGS" ]; then
             echo "::error::Couldn't read the strings of $BIN"
             exit 1
           fi
-          if grep -qE 'APPMON_SCAN_ROOT|Headless mode needs' "$STRINGS"; then
-            echo "::error::Release build contains developer-only switches: $(grep -oE 'APPMON_SCAN_ROOT|Headless mode needs' "$STRINGS" | sort -u | tr '\n' ' ')"
+          DEBUG_SWITCHES='APPMON_SCAN_ROOT|APPMON_CAPTURE|APPMON_DEMO|Headless mode needs'
+          if grep -qE "$DEBUG_SWITCHES" "$STRINGS"; then
+            echo "::error::Release build contains developer-only switches: $(grep -oE "$DEBUG_SWITCHES" "$STRINGS" | sort -u | tr '\n' ' ')"
+            exit 1
+          fi
+          # The short names are invisible to strings, so also check that the debug-only code itself
+          # (headless scan/clean, window capture) isn't compiled in. Its symbols exist only with APPMON_DEBUG.
+          SYMS="$RUNNER_TEMP/appmon-symbols.txt"
+          if ! nm "$BIN" > "$SYMS" || [ ! -s "$SYMS" ]; then
+            echo "::error::Couldn't read the symbols of $BIN"
+            exit 1
+          fi
+          if grep -qE 'HeadlessO14runIfRequested|captureWindow' "$SYMS"; then
+            echo "::error::Release build contains developer-only code (Headless or captureWindow)"
             exit 1
           fi
 
       - name: Zip
+        id: zip
         run: |
-          cd AppMonitor
-          ditto -c -k --keepParent "App Monitor.app" "../AppMonitor-${{ steps.version.outputs.version }}.zip"
+          ZIP="AppMonitor-${{ steps.version.outputs.version }}.zip"
+          (cd AppMonitor && ditto -c -k --keepParent "App Monitor.app" "../$ZIP")
+          SHA256="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+          [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Couldn't hash $ZIP"; exit 1; }
+          echo "path=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be   # v2.4.0
+        with:
+          subject-path: ${{ steps.zip.outputs.path }}
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
+          ZIP: ${{ steps.zip.outputs.path }}
+          SHA256: ${{ steps.zip.outputs.sha256 }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "AppMonitor-$VERSION.zip" \
+          NOTES="$(printf '%s\n\n%s\n\n%s\n' \
+            "Signed with the project's own certificate, not notarized by Apple: on first launch go to System Settings → Privacy & Security and click Open Anyway. Updating from 1.1.0 or earlier (ad-hoc signed): switch App Monitor off and on again in Full Disk Access once." \
+            "SHA-256 of $ZIP: \`$SHA256\`" \
+            "To check the download before opening it, see \"Verify your download\" in the README.")"
+          gh release create "$GITHUB_REF_NAME" "$ZIP" \
             --title "App Monitor $VERSION" \
             --generate-notes \
-            --notes "Signed with the project's own certificate, not notarized by Apple: on first launch go to System Settings → Privacy & Security and click Open Anyway. Updating from 1.1.0 or earlier (ad-hoc signed): switch App Monitor off and on again in Full Disk Access once."
+            --notes "$NOTES"

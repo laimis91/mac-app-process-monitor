@@ -5,14 +5,22 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # APPMON_VERSION sets the app version (the release workflow passes the tag, without the "v").
-VERSION="${APPMON_VERSION:-1.1.0}"
+VERSION="${APPMON_VERSION:-1.2.0}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "APPMON_VERSION must look like 1.2.3" >&2; exit 1; }
 # APPMON_RELEASE=1 (set by the release workflow) refuses to build without a signing identity.
 if [ "${APPMON_RELEASE:-}" = "1" ] && [ -z "${APPMON_SIGN_IDENTITY:-}" ]; then
   echo "APPMON_RELEASE=1 needs APPMON_SIGN_IDENTITY: release builds must not be ad-hoc signed." >&2
   exit 1
 fi
+# A debug build has the developer switches (headless listing, window capture). Signed with the
+# release certificate it would get the release app's Full Disk Access, so debug builds are ad-hoc only.
+if [ "${APPMON_DEBUG:-}" = "1" ] && { [ -n "${APPMON_SIGN_IDENTITY:-}" ] || [ "${APPMON_RELEASE:-}" = "1" ]; }; then
+  echo "APPMON_DEBUG=1 can't be combined with APPMON_SIGN_IDENTITY or APPMON_RELEASE: debug builds are ad-hoc signed only." >&2
+  exit 1
+fi
 APP="${APPMON_OUT:-App Monitor.app}"   # APPMON_OUT: build somewhere else (fixture tests)
+# The build starts with rm -rf "$APP": refuse anything that isn't an app bundle path.
+[[ "$APP" == *?.app ]] || { echo "APPMON_OUT must end in .app, got: $APP" >&2; exit 1; }
 SOURCES=(main.swift Views.swift Demo.swift CleanerModel.swift CleanerViews.swift
          DiskTabView.swift ResultRows.swift UninstallerViews.swift DiskPanels.swift CleanerSheets.swift SettingsView.swift
          Cleaner/Model.swift Cleaner/PathGuard.swift Cleaner/Keys.swift Cleaner/ScanEngine.swift
@@ -67,10 +75,15 @@ sed -i '' "s/__VERSION__/$VERSION/g" "$APP/Contents/Info.plist"
 # such as the self-signed "App Monitor Signing" (scripts/make-signing-cert.sh). Without it the
 # build is ad-hoc signed, which is fine for trying things out, but macOS then treats every build
 # as a new app and forgets Full Disk Access. APPMON_SIGN_KEYCHAIN limits the search to one
-# keychain (the release workflow's temporary one). APPMON_RELEASE=1 refuses to sign ad-hoc.
+# keychain (the release workflow's temporary one, or a dedicated one: README, Signing).
+# APPMON_RELEASE=1 refuses to sign ad-hoc.
+# Every build, signed or ad-hoc, uses the hardened runtime, so another process can't load code
+# into the app (for example with DYLD_INSERT_LIBRARIES) and use its Full Disk Access. Its only
+# entitlement lets it send Apple events to Finder (Trash with Put Back).
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP/Contents/Info.plist")"
+RUNTIME=(--options runtime --entitlements AppMonitor.entitlements)
 if [ -n "${APPMON_SIGN_IDENTITY:-}" ]; then
-  SIGN=(--force --sign "$APPMON_SIGN_IDENTITY")
+  SIGN=(--force "${RUNTIME[@]}" --sign "$APPMON_SIGN_IDENTITY")
   [ -n "${APPMON_SIGN_KEYCHAIN:-}" ] && SIGN+=(--keychain "$APPMON_SIGN_KEYCHAIN")
   echo "Signing with \"$APPMON_SIGN_IDENTITY\"…"
   codesign "${SIGN[@]}" "$APP"
@@ -84,7 +97,25 @@ if [ -n "${APPMON_SIGN_IDENTITY:-}" ]; then
   fi
   echo "${REQ}"
 else
-  codesign --force -s - "$APP" >/dev/null
+  codesign --force "${RUNTIME[@]}" -s - "$APP" >/dev/null
   echo "Ad-hoc signed (set APPMON_SIGN_IDENTITY to keep Full Disk Access across builds)."
 fi
+# The signature must have the hardened runtime flag and the Apple events entitlement, and no
+# entitlement that would let other code into the process again.
+CD="$(codesign -dv "$APP" 2>&1 | grep '^CodeDirectory ' || true)"
+if [[ "$CD" != *"flags="*runtime* ]]; then
+  echo "Build is not signed with the hardened runtime: ${CD:-no CodeDirectory}" >&2
+  exit 1
+fi
+codesign -d --entitlements - --xml "$APP" > "$TMP/entitlements.plist" 2>/dev/null || true
+ENTS="$(cat "$TMP/entitlements.plist")"
+if [ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.automation.apple-events" "$TMP/entitlements.plist" 2>/dev/null)" != "true" ]; then
+  echo "Build lacks the com.apple.security.automation.apple-events entitlement." >&2
+  exit 1
+fi
+if [[ "$ENTS" == *disable-library-validation* || "$ENTS" == *allow-dyld-environment-variables* ]]; then
+  echo "Build has an entitlement that weakens the hardened runtime." >&2
+  exit 1
+fi
+echo "Hardened runtime on; entitlement: com.apple.security.automation.apple-events."
 echo "Built: $(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"

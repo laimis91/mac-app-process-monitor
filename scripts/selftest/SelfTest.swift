@@ -33,8 +33,206 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         guardScopes()
         embeddedOwner()
         trashLookup()
+        toolLookup()
+        toolEnvironment()
+        toolRunner()
+        groupProtection()
+        swappedFolder()
         print("selftest: \(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
+    }
+
+    /// Tool lookup (spec 6.5), with stub executables in a scratch folder: each tool only in its
+    /// own folders, and nothing run whose path others can change or that links elsewhere.
+    static func toolLookup() {
+        let fm = FileManager.default
+        let root = Roots.canonical(NSTemporaryDirectory()) + "/appmon-selftest-tools-\(getpid())"
+        defer { _ = chmod(root + "/groupw", 0o755); try? fm.removeItem(atPath: root) }
+        func stub(_ path: String, mode: mode_t = 0o755) {
+            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: Data("#!/bin/sh\nexit 0\n".utf8))
+            _ = chmod(path, mode)
+        }
+        func dir(_ path: String, mode: mode_t = 0o755) {
+            try? fm.createDirectory(atPath: path, withIntermediateDirectories: true)
+            _ = chmod(path, mode)
+        }
+        dir(root, mode: 0o755)
+        let dotnet = ToolPlace(folder: root + "/dotnet", targets: [root + "/dotnet"])
+        let brew = ToolPlace(folder: root + "/brew/bin", targets: [root + "/brew"])
+        stub(root + "/dotnet/dotnet")
+        stub(root + "/dotnet/xcrun")                             // planted where only dotnet belongs
+        dir(root + "/brew/bin")
+        stub(root + "/brew/Cellar/npm/npm")
+        try? fm.createSymbolicLink(atPath: root + "/brew/bin/npm", withDestinationPath: "../Cellar/npm/npm")
+        stub(root + "/elsewhere/yarn")
+        try? fm.createSymbolicLink(atPath: root + "/brew/bin/yarn", withDestinationPath: root + "/elsewhere/yarn")
+        stub(root + "/brew/bin/pnpm", mode: 0o775)               // group-writable file
+        stub(root + "/brew/bin/brew", mode: 0o757)               // world-writable file
+        let loc = ToolLocator(places: ["dotnet": [dotnet], "npm": [brew], "yarn": [brew], "pnpm": [brew], "brew": [brew],
+                                       "xcrun": [ToolPlace(folder: "/usr/bin", targets: [])]], xcodeSelectOK: true)
+        eq(loc.find("dotnet"), root + "/dotnet/dotnet", "tool in its own folder")
+        eq(loc.find("xcrun"), "/usr/bin/xcrun", "xcrun only from /usr/bin, never a planted copy in another tool's folder")
+        eq(ToolLocator(places: loc.places, xcodeSelectOK: false).find("xcrun"), nil, "/usr/bin stub without the CLT")
+        eq(loc.find("python3"), nil, "a tool without places is never found")
+        eq(loc.find("npm"), root + "/brew/bin/npm", "symlink into its own prefix")
+        eq(loc.find("yarn"), nil, "symlink outside its prefix refused")
+        eq(loc.find("pnpm"), nil, "group-writable executable refused")
+        eq(loc.find("brew"), nil, "world-writable executable refused")
+        // A group-writable folder on the way (not the admin group) refuses everything below it.
+        dir(root + "/groupw/bin")
+        stub(root + "/groupw/bin/dotnet")
+        _ = chown(root + "/groupw", getuid(), 20)                // staff: every user is in it
+        _ = chmod(root + "/groupw", 0o775)
+        let gw = ToolPlace(folder: root + "/groupw/bin", targets: [root + "/groupw/bin"])
+        check(ToolTrust.refusal(root + "/groupw/bin/dotnet", place: gw)?.contains("writable by its group") == true,
+              "group-writable folder on the path refused")
+        // ...but the admin group may write (Homebrew's folders, /Applications).
+        if chown(root + "/groupw", getuid(), ToolTrust.adminGroup) == 0 {
+            eq(ToolTrust.refusal(root + "/groupw/bin/dotnet", place: gw), nil, "admin-group-writable folder accepted")
+        } else { print("     (skipped: can't give a folder to the admin group here)") }
+        _ = chmod(root + "/groupw", 0o755)
+        // A folder reached through a symlink, and the first place refused: the next place is used.
+        try? fm.createSymbolicLink(atPath: root + "/linked", withDestinationPath: root + "/dotnet")
+        let linked = ToolPlace(folder: root + "/linked", targets: [root + "/linked"])
+        check(ToolTrust.refusal(root + "/linked/dotnet", place: linked) != nil, "folder through a symlink refused")
+        let two = ToolLocator(places: ["dotnet": [linked, dotnet]], xcodeSelectOK: true)
+        eq(two.find("dotnet"), root + "/dotnet/dotnet", "a refused place falls through to the next")
+        // Another owner (root-owned files are fine: /usr/bin passes above).
+        var st = stat(); st.st_uid = getuid() + 1; st.st_mode = S_IFREG | 0o755
+        eq(ToolTrust.entryRefusal(st, uid: getuid()), "owned by another user", "another user's file refused")
+        st.st_uid = 0; st.st_mode = S_IFDIR | 0o1777
+        eq(ToolTrust.entryRefusal(st, uid: getuid()), nil, "root-owned sticky folder (/private/tmp) accepted")
+        st.st_uid = getuid(); st.st_mode = S_IFDIR | 0o1777
+        check(ToolTrust.entryRefusal(st, uid: getuid()) != nil, "a sticky folder not owned by root refused")
+        // The real places: each tool only in its own folders.
+        let real = ToolLocator.realPlaces(home: "/Users/x")
+        eq(real["xcrun"]?.map(\.folder), ["/usr/bin"], "xcrun: /usr/bin only")
+        eq(real["python3"]?.map(\.folder), ["/usr/bin"], "python3: /usr/bin only")
+        eq(real["dotnet"]?.map(\.folder), ["/usr/local/share/dotnet", "/Users/x/.dotnet"], "dotnet folders")
+        for t in ["brew", "npm", "yarn", "pnpm", "docker"] {
+            eq(real[t]?.map(\.folder), ["/opt/homebrew/bin", "/usr/local/bin"], "\(t): Homebrew folders only")
+        }
+    }
+
+    /// The tool environment (S4 review): a fixed allow-list, nothing else of App Monitor's.
+    static func toolEnvironment() {
+        let inherited = ["NODE_OPTIONS": "--require /tmp/x.js", "BASH_ENV": "/tmp/x", "PYTHONPATH": "/tmp",
+                         "DOTNET_STARTUP_HOOKS": "/tmp/x.dll", "DEVELOPER_DIR": "/tmp/xc", "DYLD_INSERT_LIBRARIES": "/tmp/x.dylib",
+                         "HOME": "/tmp/fakehome", "PATH": "/tmp/bin:/usr/bin", "TMPDIR": "/tmp/evil/", "USER": "mallory",
+                         "LANG": "en_US.UTF-8", "LC_CTYPE": "UTF-8", "LC_ALL": "../../tmp/x", "LC_MESSAGES": ""]
+        let env = ToolEnvironment.make(for: "/opt/homebrew/bin/npm", inherited: inherited, home: "/Users/u", user: "u",
+                                       tmp: "/private/var/folders/xy/T")
+        eq(env, ["PATH": "/opt/homebrew/bin:/usr/bin:/bin", "NO_COLOR": "1", "HOME": "/Users/u", "USER": "u", "LOGNAME": "u",
+                 "TMPDIR": "/private/var/folders/xy/T/", "LANG": "en_US.UTF-8", "LC_CTYPE": "UTF-8"],
+           "only the allow-list, with the user's real values; locale values with a path are dropped")
+        check(ToolEnvironment.realHome().hasPrefix("/"), "home from the user database")
+        check(!ToolEnvironment.realUser().isEmpty, "user name from the user database")
+        // End to end: a variable set in this process doesn't reach the child.
+        setenv("NODE_OPTIONS", "--require /tmp/x.js", 1)
+        setenv("DOTNET_STARTUP_HOOKS", "/tmp/x.dll", 1)
+        let r = ToolRunner.run("/usr/bin/env", [], timeout: 10)
+        unsetenv("NODE_OPTIONS"); unsetenv("DOTNET_STARTUP_HOOKS")
+        let keys = Set(r.output.split(separator: "\n").compactMap { $0.split(separator: "=", maxSplits: 1).first.map(String.init) })
+        let allowed: Set<String> = ["PATH", "NO_COLOR", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"]
+        check(r.status == 0 && !keys.isEmpty, "env ran")
+        check(keys.allSatisfy { allowed.contains($0) || $0.hasPrefix("LC_") }, "child sees only the allow-list: \(keys.sorted())")
+        check(r.output.contains("HOME=" + ToolEnvironment.realHome() + "\n"), "child's HOME is the real home")
+    }
+
+    /// The runner (spec 6.5): exit codes, the timeout, no inherited descriptors, and children
+    /// that are responsible for themselves (so they don't get App Monitor's Full Disk Access).
+    static func toolRunner() {
+        eq(ToolRunner.run("/bin/sh", ["-c", "echo hi; exit 3"], timeout: 10).status, 3, "exit code")
+        eq(ToolRunner.run("/bin/sh", ["-c", "echo hi"], timeout: 10).output, "hi\n", "output")
+        let slow = ToolRunner.run("/bin/sleep", ["5"], timeout: 0.5)
+        check(slow.timedOut && slow.status == -2, "timeout stops the tool")
+        eq(ToolRunner.run("/nonexistent/tool", []).status, -1, "missing executable")
+        // A descriptor of this process (not close-on-exec) isn't open in the child.
+        let fd = open("/dev/null", O_RDONLY)
+        // A timeout stops the tool's helpers too: the background sleep must not survive the run.
+        let marker = NSTemporaryDirectory() + "appmon-pg-\(getpid())"
+        _ = ToolRunner.run("/bin/sh", ["-c", "(sleep 3; touch \(marker)) & sleep 30"], timeout: 0.5)
+        Thread.sleep(forTimeInterval: 3.5)
+        check(!FileManager.default.fileExists(atPath: marker), "timeout stops the tool's whole process group")
+        try? FileManager.default.removeItem(atPath: marker)
+        let fds = ToolRunner.run("/bin/sh", ["-c", "[ -e /dev/fd/\(fd) ] && echo open || echo closed"], timeout: 10)
+        close(fd)
+        eq(fds.output, "closed\n", "only stdin, stdout and stderr reach the child")
+        check(Responsibility.available, "responsibility_spawnattrs_setdisclaim is available")
+        var child: pid_t = 0
+        var responsible: pid_t? = nil
+        _ = ToolRunner.run("/bin/sleep", ["1"], timeout: 10, started: { pid in
+            child = pid; responsible = Responsibility.responsible(for: pid)
+        })
+        if let responsible { eq(responsible, child, "the child is responsible for itself") }
+        else { print("     (skipped: responsibility can't be asked here)") }
+        // With Full Disk Access in this process (a terminal that has it), the child must not have it.
+        let safari = ToolEnvironment.realHome() + "/Library/Safari"
+        if (try? FileManager.default.contentsOfDirectory(atPath: safari)) != nil {
+            let r = ToolRunner.run("/bin/ls", [safari], timeout: 10)
+            check(r.status != 0, "a child can't list ~/Library/Safari although this process can")
+        } else { print("     (skipped: this process has no Full Disk Access, so the FDA check can't run)") }
+    }
+
+    /// S6 review: a group container with a protected name is Info, and an embedded ID that
+    /// LaunchServices knows from another path belongs to that app.
+    static func groupProtection() {
+        let app = AppInfo(id: "com.evil.app", name: "Evil", path: "/Applications/Evil.app")
+        let t = UninstallTarget(app: app, ids: ["com.evil.app"], groups: ["group.com.apple.notes", "group.com.evil.app"])
+        let place = LeftoverPlace.named("groupContainers")
+        func m(_ n: String) -> Uninstaller.Match? {
+            Uninstaller.match(n, at: "/x/" + n, in: place, app: app, target: t, named: [], own: { _ in nil }, claimers: { _ in [] })
+        }
+        eq(m("group.com.apple.notes")?.kept, Uninstaller.protectedGroup, "claimed Apple group: not moved")
+        eq(m("group.com.evil.app")?.kept, nil, "its own group: may be moved")
+        // Embedded IDs: one LaunchServices knows at another path is that app's.
+        let ids = ["com.evil.app", "com.real.tool"]
+        let ls: (String) -> AppInfo? = { id in
+            switch id {
+            case "com.real.tool": return AppInfo(id: id, name: "Real Tool", path: "/Users/x/Downloads/Real Tool.app")
+            case "com.evil.app": return AppInfo(id: id, name: "Evil copy", path: "/Users/x/Downloads/Evil.app")
+            default: return nil
+            }
+        }
+        eq(Uninstaller.owner(of: "com.real.tool", target: ids, others: [], lookup: ls, targetPath: app.path),
+           .other("Real Tool"), "embedded ID equal to an app elsewhere: that app wins")
+        eq(Uninstaller.owner(of: "com.real.tool.cache", target: ids, others: [], lookup: ls, targetPath: app.path),
+           .other("Real Tool"), "...and its sub-IDs")
+        eq(Uninstaller.owner(of: "com.evil.app", target: ids, others: [], lookup: ls, targetPath: app.path),
+           .target, "the app's own ID: another copy doesn't take its data")
+        let inside: (String) -> AppInfo? = { id in AppInfo(id: id, name: "Helper", path: app.path + "/Contents/Library/LoginItems/H.app") }
+        eq(Uninstaller.owner(of: "com.real.tool", target: ids, others: [], lookup: inside, targetPath: app.path),
+           .target, "an embedded ID LaunchServices knows inside the app stays the app's")
+    }
+
+    /// S5 review: a folder above an item swapped for a symlink after the last checks. The
+    /// FileManager mover opens the folder without following symlinks and checks the item, so
+    /// neither the decoy behind the link nor anything else is moved.
+    static func swappedFolder() {
+        let fm = FileManager.default
+        let root = "/private/tmp/appmon-fixture-selftest-swap-\(getpid())"
+        defer { try? fm.removeItem(atPath: root) }
+        let dir = root + "/home/Library/Caches/com.a.app", decoy = root + "/decoy"
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: decoy, withIntermediateDirectories: true)
+        fm.createFile(atPath: dir + "/item", contents: Data("real".utf8))
+        fm.createFile(atPath: decoy + "/item", contents: Data("decoy".utf8))
+        let id = ScanEngine.fileID(dir + "/item") ?? []
+        let swap = TrashItem(path: dir + "/item", fileID: id, recheck: {
+            try? fm.moveItem(atPath: dir, toPath: dir + ".moved")
+            try? fm.createSymbolicLink(atPath: dir, withDestinationPath: decoy)
+            return nil                                       // the checks passed, then the folder was swapped
+        })
+        let r = Cleaner.trashWithFileManager([swap])
+        eq(r[dir + "/item"], .skipped("Changed since the scan"), "swapped folder: not moved")
+        check(fm.fileExists(atPath: decoy + "/item") && fm.fileExists(atPath: dir + ".moved/item"), "decoy and real item both stay")
+        // A recheck that fails leaves the item out; so does a changed identity.
+        eq(Cleaner.trashWithFileManager([TrashItem(path: decoy + "/item", fileID: id, recheck: { "Changed since the scan" })])[decoy + "/item"],
+           .skipped("Changed since the scan"), "failed recheck: not handed over")
+        eq(Cleaner.trashWithFileManager([TrashItem(path: decoy + "/item", fileID: id)])[decoy + "/item"],
+           .skipped("Changed since the scan"), "another file at the path: not moved")
+        check(fm.fileExists(atPath: decoy + "/item"), "decoy still there")
     }
 
     static func keys() {
@@ -225,7 +423,7 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         let inv = AppInventory(roots: r, lookup: nil, running: { [] })
         func env(_ mover: @escaping ([String]) -> [String: TrashResult], batch: Int = 100) -> CleanEnvironment {
             CleanEnvironment(guardian: PathGuard(roots: r), runningNow: { [] }, inventory: inv, roots: r,
-                             dryRun: false, now: Date.init, prepareTrash: { mover }, batchSize: batch)
+                             dryRun: false, now: Date.init, prepareTrash: { { items in mover(items.map(\.path)) } }, batchSize: batch)
         }
         // item-level failure: the batch fails, each item is retried alone; "two" keeps failing
         var calls: [[String]] = []
@@ -266,7 +464,7 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         calls = []
         var dry = env({ p in calls.append(p); return [:] })
         dry = CleanEnvironment(guardian: dry.guardian, runningNow: dry.runningNow, inventory: inv, roots: r,
-                               dryRun: true, now: Date.init, prepareTrash: { { p in calls.append(p); return [:] } })
+                               dryRun: true, now: Date.init, prepareTrash: { { items in calls.append(items.map(\.path)); return [:] } })
         let out3 = Cleaner.clean(pairs, env: dry)
         check(calls.isEmpty && out3.allSatisfy { $0.status == .planned }, "dry run plans only")
     }
@@ -796,7 +994,7 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         func scan(fda: FDAStatus = .granted, spotlight: @escaping ([String]) -> SpotlightAnswer = { _ in .notFound }) -> [Category] {
             let inv = AppInventory(roots: r, lookup: nil, running: { [] })
             var ctx = ScanContext(roots: r, limits: AgeLimits(), fda: fda, ignore: [(L + "/Caches/com.ignored.app").lowercased()],
-                                  inventory: inv, running: [], tools: ToolLocator(dirs: [], xcodeSelectOK: true),
+                                  inventory: inv, running: [], tools: ToolLocator(places: [:], xcodeSelectOK: true),
                                   cancel: CancelFlag(), now: Date())
             ctx.spotlight = spotlight
             return Leftovers.scan(ctx).categories
@@ -976,7 +1174,7 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         func ctx(fda: FDAStatus = .granted, running: [RunningApp] = []) -> ScanContext {
             ScanContext(roots: r, limits: AgeLimits(), fda: fda, ignore: [(L + "/Caches/com.vendor.app.ignored").lowercased()],
                         inventory: AppInventory(roots: r, lookup: nil, running: { running }), running: running,
-                        tools: ToolLocator(dirs: [], xcodeSelectOK: true), cancel: CancelFlag(), now: Date())
+                        tools: ToolLocator(places: [:], xcodeSelectOK: true), cancel: CancelFlag(), now: Date())
         }
         guard let plan = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(), probes: probes) else { check(false, "plan"); return }
         eq(plan.target.ids.first, "com.vendor.app", "target IDs start with the app's")

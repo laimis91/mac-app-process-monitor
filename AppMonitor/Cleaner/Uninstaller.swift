@@ -109,23 +109,29 @@ enum Uninstaller {
     /// matched, and each shorter ID down to it: an app installed outside the scanned folders
     /// (com.vendor.app.beta in Downloads) then wins too. An app LaunchServices names is the
     /// target only by a target ID or by sitting inside `targetPath`; an empty `targetPath`
-    /// matches no app.
+    /// matches no app. The matched ID itself is asked about too when it is an embedded ID (not
+    /// the app's own, `target[0]`): an app can embed a bundle with any ID, so an app
+    /// LaunchServices knows by exactly that ID at another path wins.
     static func owner(of key: String, target: [String], others: [(id: String, name: String)],
                       lookup: ((String) -> AppInfo?)? = nil, targetPath: String) -> Owner? {
         let k = key.lowercased()
         var best = -1
         var who: Owner?
-        for t in target where BundleIDs.belongs(k, to: t) && t.count > best { best = t.count; who = .target }
+        var matched = ""
+        for t in target where BundleIDs.belongs(k, to: t) && t.count > best { best = t.count; who = .target; matched = t }
         guard who != nil else { return nil }
         for o in others where BundleIDs.belongs(k, to: o.id) && o.id.count >= best { best = o.id.count; who = .other(o.name) }
-        if who == .target, let lookup, k.count > best {
+        guard who == .target, let lookup else { return who }
+        let tp = PathGuard.comps(targetPath)
+        func inside(_ a: AppInfo) -> Bool { !tp.isEmpty && PathGuard.within(PathGuard.comps(a.path), tp) }
+        if k.count > best {
             for pre in LeftoverMatcher.prefixes(key) where pre.count > best {
                 guard let a = lookup(pre) else { continue }
-                let tp = PathGuard.comps(targetPath)
-                let same = target.contains(a.id.lowercased()) || (!tp.isEmpty && PathGuard.within(PathGuard.comps(a.path), tp))
+                let same = target.contains(a.id.lowercased()) || inside(a)
                 if !same { return .other(a.name) }
             }
         }
+        if matched != target.first, let a = lookup(matched), !inside(a) { return .other(a.name) }
         return who
     }
 
@@ -179,7 +185,9 @@ enum Uninstaller {
     }
 
     /// Why an entry of a place belongs to the target (spec 10).
-    struct Match { var why: String; var shared: [String] = []; var byName = false }
+    struct Match { var why: String; var shared: [String] = []; var byName = false; var kept: String? = nil }
+
+    static let protectedGroup = "Not moved: protected name"
 
     /// The per-place rule for the entry `n` at `p`: an app container by its own record, a group
     /// container by an entitlement or its ID, a launch job by its label, anything else by bundle
@@ -199,9 +207,12 @@ enum Uninstaller {
             let o = key.kind == .bundleID ? own(key.key) : nil
             if case .other = o { return nil }
             guard byGroup || o == .target else { return nil }
+            // Entitlements are read without checking the signature, so any app can claim any
+            // group: one with a protected name (group.com.apple.…) is shown, never moved.
+            let protected = Protection.isProtected(n) || Protection.isProtected(key.key)
             return Match(why: byGroup ? "\(place.noun) of the app group \(n), listed in \(app.name)'s entitlements"
                                       : "\(place.noun) of \(key.key)",
-                         shared: claimers(n.lowercased()))
+                         shared: claimers(n.lowercased()), kept: protected ? protectedGroup : nil)
         case "launchAgents", "sysLaunchAgents", "sysLaunchDaemons":
             let label = (NSDictionary(contentsOfFile: p)?["Label"] as? String) ?? key.key
             guard own(label) == .target else { return nil }
@@ -291,6 +302,7 @@ enum Uninstaller {
                 // Anything that keeps the item shows it as Info with the reason (S5).
                 var kept: String?
                 if isInfo { kept = "Needs administrator rights to remove. Remove it in Finder." }
+                else if let reason = hit.kept { kept = reason }
                 else if !shared.isEmpty { kept = "Shared with \(shared.joined(separator: ", ")), so it stays." }
                 else if let nested = nestedApp(p) { kept = "Contains \(nested), so it stays. Remove it in Finder." }
                 else if let pr = m.protected { kept = pr }

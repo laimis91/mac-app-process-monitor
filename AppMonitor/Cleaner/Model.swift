@@ -64,6 +64,7 @@ struct ToolCommand {
     let commands: [[String]]        // argument lists, run one after another
     let preview: [String]?          // read-only "what would it do" arguments, shown in the sheet
     var executable: String? = nil   // resolved absolute path
+    var place: ToolPlace? = nil     // where it was found: checked again right before it runs (spec 6.5)
     var command: [String] { commands.map { ([tool] + $0).joined(separator: " ") } }
 }
 
@@ -86,8 +87,15 @@ struct Roots {
     let applications: String
     let systemApplications: String
     let library: String
-    let toolDirs: [String]
+    /// Where each tool is looked up, in order (spec 6.5).
+    let toolPlaces: [String: [ToolPlace]]
     let fixture: Bool
+
+    /// Every folder a tool is looked up in, once each.
+    var toolFolders: [String] {
+        var seen = Set<String>()
+        return toolPlaces.keys.sorted().flatMap { toolPlaces[$0]! }.map(\.folder).filter { seen.insert($0).inserted }
+    }
 
     func h(_ rel: String) -> String { home + "/" + rel }
 
@@ -108,9 +116,7 @@ struct Roots {
         let home = canonical(NSHomeDirectory())
         return Roots(home: home, temp: userTempDir(), applications: "/Applications",
                      systemApplications: "/System/Applications", library: "/Library",
-                     toolDirs: ["/opt/homebrew/bin", "/usr/local/bin", "/usr/local/share/dotnet",
-                                home + "/.dotnet", "/usr/bin"],
-                     fixture: false)
+                     toolPlaces: ToolLocator.realPlaces(home: home), fixture: false)
     }
 
     /// Fixture roots inside `root`. Returns nil unless the canonical root is a fixture folder.
@@ -119,7 +125,9 @@ struct Roots {
         guard r.hasPrefix("/private/tmp/appmon-fixture-"), !r.contains("/../") else { return nil }
         return Roots(home: r + "/home", temp: r + "/tmp", applications: r + "/Applications",
                      systemApplications: r + "/System/Applications", library: r + "/Library",
-                     toolDirs: [r + "/bin"], fixture: true)
+                     toolPlaces: Dictionary(uniqueKeysWithValues: ToolLocator.realPlaces(home: r + "/home").keys.map {
+                         ($0, [ToolPlace(folder: r + "/bin", targets: [r + "/bin"])])
+                     }), fixture: true)
     }
 }
 

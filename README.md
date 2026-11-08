@@ -89,8 +89,32 @@ APPMON_SIGN_IDENTITY="App Monitor Signing" ./AppMonitor/build.sh
 
 Builds from the [Releases page](https://github.com/laimis91/mac-app-process-monitor/releases)
 are signed with the project's own certificate but not notarized by Apple, so macOS blocks them
-the first time. Open the app once, then go to **System Settings → Privacy & Security** and
-click **Open Anyway**.
+the first time. Before you open it, [verify your download](#verify-your-download). Then open the
+app once, go to **System Settings → Privacy & Security** and click **Open Anyway**.
+
+### Verify your download
+
+Because macOS can't vouch for a self-signed app, check it yourself before clicking **Open
+Anyway**. Unzip the download and run:
+
+```bash
+codesign --verify --strict "App Monitor.app" && codesign -d -r- "App Monitor.app"
+```
+
+The requirement must name both the app and the project's certificate, exactly:
+
+```
+designated => identifier "io.github.laimis91.appmonitor" and certificate leaf = H"97a38ab68479a7bc0f6dd1d3c7fdf5077d7454c4"
+```
+
+A different certificate hash, or `cdhash` instead of `identifier … and certificate leaf`, means
+the app wasn't signed by this project: don't open it. Also compare `shasum -a 256` of the zip
+with the SHA-256 in the release notes, and check that the zip was built from this repository by
+its release workflow:
+
+```bash
+gh attestation verify AppMonitor-<version>.zip --repo laimis91/mac-app-process-monitor
+```
 
 ## Reading the numbers
 
@@ -159,6 +183,7 @@ AppMonitor/
   Cleaner/          disk cleaner engine: rules, path guard, scanner, actions
   Icon/             app icon and the script that draws it
   build.sh          builds App Monitor.app
+  AppMonitor.entitlements  its only entitlement: Apple events to Finder (hardened runtime)
 scripts/            apptop.py, screenshot.sh, selftest.sh, grouping-test.sh, fixture-test.sh,
                     make-fixtures.sh (the fake folder trees fixture-test.sh uses), make-signing-cert.sh
 docs/               README screenshot, disk cleaner specification
@@ -175,9 +200,11 @@ scripts/fixture-test.sh   # scans and cleans a made-up folder tree (its tiny fak
 ## Releases
 
 Pushing a version tag builds the app on GitHub Actions and publishes it on the Releases page
-([`.github/workflows/release.yml`](.github/workflows/release.yml)). The workflow checks the
-signing secrets, runs the self-test, builds a signed universal app with the tag's version, checks
-the signature, and uploads `AppMonitor-<version>.zip`. If the signing secrets are missing it
+([`.github/workflows/release.yml`](.github/workflows/release.yml)). The workflow checks that the
+tagged commit is on `main` and that the signing secrets are there, runs the self-test, builds a
+signed universal app with the tag's version, checks the signature, hardened runtime and
+entitlements, and uploads `AppMonitor-<version>.zip` with its SHA-256 in the release notes and a
+build provenance attestation. If the tag isn't on `main` or the signing secrets are missing it
 fails before building and publishes nothing.
 
 ```bash
@@ -185,7 +212,7 @@ git tag v1.2.0
 git push origin v1.2.0
 ```
 
-Local builds use version 1.1.0 unless `APPMON_VERSION` is set.
+Local builds use version 1.2.0 unless `APPMON_VERSION` is set.
 
 ## Signing
 
@@ -195,15 +222,25 @@ like a new app. A build signed with a certificate has a requirement that names t
 the certificate (`designated => identifier "io.github.laimis91.appmonitor" and certificate
 leaf = H"…"`), which stays the same as long as the same certificate signs every release.
 
+Every build, signed or ad-hoc, uses the **hardened runtime** (`codesign --options runtime`), so
+no other process can load code into App Monitor, for example with `DYLD_INSERT_LIBRARIES`, and
+use its Full Disk Access. Its only entitlement,
+[`AppMonitor/AppMonitor.entitlements`](AppMonitor/AppMonitor.entitlements), is
+`com.apple.security.automation.apple-events`: App Monitor asks Finder to move items to the
+Trash, so Put Back works.
+
 `build.sh` reads these variables:
 
 | Variable | Effect |
 |---|---|
 | `APPMON_SIGN_IDENTITY` | Sign with this keychain identity (name or SHA-1). Unset: ad-hoc. The build fails if the result has no identifier-and-certificate requirement. |
-| `APPMON_SIGN_KEYCHAIN` | Look for the identity only in this keychain. |
+| `APPMON_SIGN_KEYCHAIN` | Look for the identity only in this keychain, such as the dedicated signing keychain below. |
 | `APPMON_RELEASE=1` | Refuse to build without `APPMON_SIGN_IDENTITY`. The release workflow sets it. |
 
-Check a build with `codesign -d -r- "AppMonitor/App Monitor.app"`.
+Every build fails unless the signature has the hardened runtime flag and the Apple events
+entitlement. Check a build with `codesign -d -r- "AppMonitor/App Monitor.app"` (requirement),
+`codesign -dv "AppMonitor/App Monitor.app"` (`flags=0x10000(runtime)`) and
+`codesign -d --entitlements - "AppMonitor/App Monitor.app"`.
 
 ### Create the certificate (maintainer, once)
 
@@ -211,24 +248,82 @@ The release certificate is a self-signed code-signing certificate named "App Mon
 It lives in the maintainer's keychain and in GitHub secrets, never in the repo. Create it once
 and keep it: a new certificate makes every user grant Full Disk Access again.
 
+Keep it in a **dedicated keychain** that locks on sleep and after 5 minutes, not in the login
+keychain. The login keychain stays unlocked while you're logged in, and the key is imported so
+that `codesign` can use it without asking, so any program running as you could sign something
+as App Monitor. In a locked keychain it can't.
+
 ```bash
-scripts/make-signing-cert.sh --p12 ~/Desktop/appmon-signing.p12
+K=~/Library/Keychains/appmon-signing.keychain-db
+D=$(mktemp -d)      # private temporary folder, not synced to iCloud
+scripts/make-signing-cert.sh --keychain "$K" --p12 "$D/appmon.p12"
 ```
 
-The script makes the certificate and key in a private temporary folder, adds them to your login
-keychain, and exports them to the `.p12` (it asks for a `.p12` password, at least 12
-characters, without echoing it; it refuses to write it inside any git checkout). macOS may ask for your
-login password. The first signed build may ask whether `codesign` can use the key: click
-**Always Allow**. `security find-identity -p codesigning` then lists it as
-`CSSMERR_TP_NOT_TRUSTED`; that is expected for a self-signed certificate and doesn't stop
-`codesign`.
+The script creates the keychain if it doesn't exist (`security` asks for a new password for
+it; use a different one from your login password) and sets it to lock on sleep and after 5
+minutes (`security set-keychain-settings -l -u -t 300`). It makes the certificate and key in a
+private temporary folder, adds them to the keychain, and exports them to the `.p12` (it asks
+for a `.p12` password, at least 12 characters, without echoing it; it refuses to write it
+inside any git checkout or under `~/Desktop`, `~/Documents`, `~/Library/Mobile Documents` or
+`~/Library/CloudStorage`, which may sync to the cloud). Put the `.p12` in GitHub secrets (below),
+then `rm -rf "$D"`.
 
-Contributors who build from source can make their own certificate the same way (without
+To sign, unlock the keychain first; it locks itself again after 5 minutes without use:
+
+```bash
+security unlock-keychain "$K"
+APPMON_SIGN_KEYCHAIN="$K" APPMON_SIGN_IDENTITY="App Monitor Signing" ./AppMonitor/build.sh
+```
+
+The first signed build may ask whether `codesign` can use the key: click **Always Allow**.
+`security find-identity -p codesigning` lists it as `CSSMERR_TP_NOT_TRUSTED`; that is expected
+for a self-signed certificate and doesn't stop `codesign`.
+
+Without `--keychain` (and without `APPMON_SIGN_KEYCHAIN`) the script uses the login keychain.
+Contributors who build from source can make their own certificate either way (without
 `--p12`), or stay ad-hoc.
 
-### GitHub secrets (maintainer, once)
+### Move the certificate out of the login keychain (maintainer, once)
 
-The release workflow needs two repository secrets:
+If "App Monitor Signing" is already in your login keychain, move it, keeping the same
+certificate (a new one makes every user grant Full Disk Access again):
+
+1. Create the dedicated keychain:
+
+   ```bash
+   K=~/Library/Keychains/appmon-signing.keychain-db
+   security create-keychain "$K"                    # asks for a new password
+   security set-keychain-settings -l -u -t 300 "$K" # lock on sleep and after 5 minutes
+   D=$(mktemp -d); open "$D"                        # private temporary folder
+   ```
+
+2. Export it from the login keychain: in Keychain Access, **login → My Certificates → App
+   Monitor Signing → File → Export Items…**, format **Personal Information Exchange (.p12)**,
+   save it as `appmon.p12` in the folder that just opened, and give it a password.
+3. Import it into the dedicated keychain and check both copies have the same SHA-1:
+
+   ```bash
+   security import "$D/appmon.p12" -k "$K" -f pkcs12 -T /usr/bin/codesign   # asks for the .p12 password
+   security find-identity -p codesigning "$K"
+   security find-identity -p codesigning ~/Library/Keychains/login.keychain-db
+   ```
+
+4. Sign a test build with `APPMON_SIGN_KEYCHAIN="$K"` (above) and check that
+   `codesign -d -r- "AppMonitor/App Monitor.app"` shows the same `certificate leaf` as before.
+5. Delete it from the login keychain, then the `.p12`:
+
+   ```bash
+   security delete-identity -Z <SHA-1 from step 3> ~/Library/Keychains/login.keychain-db
+   rm -rf "$D"
+   ```
+
+   Or delete both the certificate and its private key in Keychain Access (**login → My
+   Certificates → App Monitor Signing → Delete**).
+
+### GitHub secrets and the release environment (maintainer, once)
+
+The release workflow runs in a GitHub **environment** called `release` and needs two secrets
+there:
 
 | Secret | Value |
 |---|---|
@@ -236,15 +331,36 @@ The release workflow needs two repository secrets:
 | `APPMON_SIGN_P12_PASSWORD` | The `.p12` password |
 
 ```bash
-base64 -i ~/Desktop/appmon-signing.p12 | gh secret set APPMON_SIGN_P12
-gh secret set APPMON_SIGN_P12_PASSWORD
-rm ~/Desktop/appmon-signing.p12
+base64 -i "$D/appmon.p12" | gh secret set APPMON_SIGN_P12 --env release
+gh secret set APPMON_SIGN_P12_PASSWORD --env release
+rm -rf "$D"
 ```
 
-`gh secret set` without a value asks for it without echoing. You can also add both under
-**Settings → Secrets and variables → Actions**. The workflow imports the `.p12` into a temporary
-keychain with a random password, signs, and deletes the keychain at the end of the job. To export
-the `.p12` again later, use Keychain Access: **My Certificates → App Monitor Signing → Export**.
+`gh secret set` without a value asks for it without echoing. The workflow imports the `.p12`
+into a temporary keychain with a random password, signs, and deletes the keychain at the end of
+the job. If the job can't see the secrets it fails with an error that says so and publishes
+nothing.
+
+Set the environment and tags up in the repository settings (these can't be done from the
+workflow):
+
+1. **Settings → Environments → New environment**, name `release`.
+   - **Deployment branches and tags → Selected branches and tags → Add rule**, type **Tag**,
+     pattern `v*.*.*`. Only version tags can then use its secrets.
+   - **Environment secrets → Add environment secret**: `APPMON_SIGN_P12` and
+     `APPMON_SIGN_P12_PASSWORD` (or the `gh secret set --env release` commands above). Use the
+     same `.p12` as before; if you no longer have it, export it again from the dedicated keychain
+     in Keychain Access into a `mktemp -d` folder.
+   - Optionally **Required reviewers**: yourself, so every release waits for your approval.
+2. **Settings → Secrets and variables → Actions → Repository secrets**: delete
+   `APPMON_SIGN_P12` and `APPMON_SIGN_P12_PASSWORD`, so only the `release` environment has them.
+3. **Settings → Rules → Rulesets → New ruleset → New tag ruleset**, name `release tags`,
+   enforcement **Active**, target **Include by pattern** `v*.*.*`, rules **Restrict creations**,
+   **Restrict updates** and **Restrict deletions**, with yourself (or the admin role) in the
+   bypass list. Then only you can push a release tag.
+
+The workflow also refuses a tag whose commit isn't on `main`
+(`git merge-base --is-ancestor`), so a tag on an unmerged branch never publishes a signed build.
 
 ## License
 

@@ -50,7 +50,7 @@ enum Leftovers {
             }
         }
         // Command-line tools: data named after a tool (org.carthage.CarthageKit, …) is not an app's leftover.
-        var toolDirs = r.toolDirs.filter { $0 != "/usr/bin" }
+        var toolDirs = r.toolFolders.filter { $0 != "/usr/bin" }
         if !r.fixture {
             toolDirs += [".local/bin", "bin", ".cargo/bin", "go/bin", ".dotnet/tools"].map { r.h($0) }
             for cask in ["/opt/homebrew/Caskroom", "/usr/local/Caskroom"] {

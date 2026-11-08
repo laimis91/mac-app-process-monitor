@@ -23,7 +23,7 @@ WORK="$(mktemp -d)"
 FIX="$("$ROOT/scripts/make-fixtures.sh")"
 UFIX="$("$ROOT/scripts/make-fixtures.sh" --uninstall)"
 
-if ! APPMON_OUT="$WORK/Debug.app" APPMON_ARCHS="$(uname -m)" APPMON_DEBUG=1 "$ROOT/AppMonitor/build.sh" > "$WORK/build.log" 2>&1; then
+if ! env -u APPMON_SIGN_IDENTITY -u APPMON_SIGN_KEYCHAIN -u APPMON_RELEASE APPMON_OUT="$WORK/Debug.app" APPMON_ARCHS="$(uname -m)" APPMON_DEBUG=1 "$ROOT/AppMonitor/build.sh" > "$WORK/build.log" 2>&1; then
   cat "$WORK/build.log" >&2
   echo "fixture-test: debug build failed" >&2
   exit 1
@@ -97,6 +97,7 @@ assert moved, o
 for k in moved:
     assert not os.path.lexists(os.path.join(fix, k)), "still there: " + k
     assert o[k]["kb"] == scan[k], (k, o[k]["kb"], scan[k])        # 7.2: 7, totals match the scan
+    assert o[k].get("reason") in (None, "Moved without Put Back"), o[k]   # found in the Trash by device and inode
 assert o["tmp/held-item"]["status"] == "skipped" and o["tmp/held-item"]["reason"].startswith("In use by"), o["tmp/held-item"]
 assert os.path.exists(os.path.join(fix, "tmp/held-item"))
 assert o["home/Library/Caches/com.fixture.running"]["status"] == "skipped"
@@ -266,6 +267,26 @@ listed = {i["path"] for c in json.load(open(sys.argv[2])) for i in c["items"]}
 assert moved and not (moved & listed), moved & listed
 PY
 
+# 8b. A folder above an item swapped for a symlink after the checks (S13e): the event names the
+# file itself (a file reference URL), so Finder moves the checked file, never the decoy.
+D="home/Library/Logs/DiagnosticReports"
+echo real > "$FIX/$D/Swap.ips"; touch -t 202001010000 "$FIX/$D/Swap.ips"
+mkdir -p "$FIX/decoy"; echo decoy > "$FIX/decoy/Swap.ips"
+APPMON_FIXTURE_ACT=1 APPMON_FIXTURE_SWAP="$D" APPMON_SELECT="$D/Swap.ips" run "$BIN" --clean-json > "$WORK/swap.json"
+python3 -I - "$WORK/swap.json" "$FIX" "$D" <<'PY' && ok "swapped folder: the checked file moved, the decoy stayed" || bad "swapped folder"
+import json, os, sys
+o = {x["path"].replace("<root>/", ""): x for x in json.load(open(sys.argv[1]))}
+fix, d = sys.argv[2], sys.argv[3]
+r = o[d + "/Swap.ips"]
+assert open(os.path.join(fix, "decoy/Swap.ips")).read() == "decoy\n", "decoy changed"
+if r.get("reason") == "Moved without Put Back":
+    print("     (Finder can't be used here: the FileManager mover ran and the swap hook didn't)")
+else:
+    assert os.path.islink(os.path.join(fix, d)), "the swap hook didn't run"
+    assert r["status"] == "moved" and "reason" not in r, r            # found in the Trash by device and inode
+    assert not os.path.lexists(os.path.join(fix, d + ".moved/Swap.ips")), "the checked file wasn't moved"
+PY
+
 # 9. Uninstaller (spec 10), on its own fixture tree
 urun() { APPMON_SCAN_ROOT="$UFIX" "$@"; }
 usnap() { (cd "$UFIX" && find . 2>/dev/null | sort) || true; }
@@ -293,6 +314,7 @@ want = {
     L + "LaunchAgents/com.uvendor.app.agent.plist": ("U-MORE", "Review", False),
     L + "Application Support/Vendor App": ("U-NAMED", "Review", False),
     L + "Group Containers/ABCDE12345.com.uvendor.shared": ("U-KEPT", "Info", False),
+    L + "Group Containers/group.com.apple.fixturenotes": ("U-KEPT", "Info", False),   # S6: protected group name
     "Library/LaunchDaemons/com.uvendor.app.daemon.plist": ("U-KEPT", "Info", False),
     L + "Application Support/com.uvendor.app.bundled": ("U-KEPT", "Info", False),
 }
@@ -303,6 +325,7 @@ for p, (cat, risk, pre) in want.items():
     assert i["selectable"] == (risk != "Info"), (p, i)
 assert "Shared with Vendor App Pro" in items[L + "Group Containers/ABCDE12345.com.uvendor.shared"][1]["reason"]
 assert "Contains Other" in items[L + "Application Support/com.uvendor.app.bundled"][1]["reason"]
+assert items[L + "Group Containers/group.com.apple.fixturenotes"][1]["reason"].endswith("Not moved: protected name"), items[L + "Group Containers/group.com.apple.fixturenotes"]
 assert d["ids"] == ["com.uvendor.app", "com.uvendor.login"], d["ids"]   # the library XPC service is left out
 assert not any("pro" in p or "sparkle" in p or "fake" in p or "unrelated" in p or p.endswith("helper.plist") for p in items), items.keys()
 PY
@@ -364,7 +387,8 @@ for k in moved:
 L = "home/Library/"
 for k in ["Applications/Vendor App Pro.app", L + "Caches/com.uvendor.app.pro", L + "Application Support/com.uvendor.app.pro",
           L + "Preferences/com.uvendor.app.pro.plist", L + "LaunchAgents/helper.plist", L + "Containers/com.uvendor.app.fake",
-          L + "Group Containers/ABCDE12345.com.uvendor.shared", "Library/LaunchDaemons/com.uvendor.app.daemon.plist",
+          L + "Group Containers/ABCDE12345.com.uvendor.shared", L + "Group Containers/group.com.apple.fixturenotes",
+          "Library/LaunchDaemons/com.uvendor.app.daemon.plist",
           L + "Application Support/com.uvendor.app.bundled", L + "Caches/org.sparkle-project.Sparkle", L + "Caches/com.unrelated.tool"]:
     assert os.path.lexists(os.path.join(fix, k)), k
 PY
