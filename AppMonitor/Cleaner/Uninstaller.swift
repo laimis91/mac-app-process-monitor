@@ -90,13 +90,24 @@ enum Uninstaller {
         for e in AppInventory.embeddedBundles(app.path) {
             let k = e.id.lowercased()
             groups.formUnion(probes.groups(e.path))
-            guard CandidateKey.parse(k).kind == .bundleID, !ids.contains(k) else { continue }
-            if Protection.isProtected(k) && !BundleIDs.belongs(k, to: own) { continue }
+            guard !ids.contains(k) else { continue }
+            if CandidateKey.parse(k).kind == .bundleID {
+                if Protection.isProtected(k) && !BundleIDs.belongs(k, to: own) { continue }
+            } else if !distinctivePlainID(k) { continue }
             ids.append(k)
         }
         var t = UninstallTarget(app: app, ids: ids, groups: groups.sorted())
         t.otherCopies = probes.copies(app.id).filter { $0.lowercased() != located(app.path).lowercased() }
         return t
+    }
+
+    /// A helper ID that isn't in reverse-DNS form ("ChatGPTHelper") counts only when it can't be
+    /// a generic word: long enough, one word, not on the protection list and not a helper-like
+    /// word on its own. Data is then matched by the exact ID only, never as a prefix.
+    static func distinctivePlainID(_ k: String) -> Bool {
+        k.count >= 6 && !k.contains(".") && !k.contains(" ") && !k.contains("/")
+            && !Protection.isProtected(k) && !Protection.isProtectedName(k)
+            && !BundleIDs.helperSuffixes.contains(EvidenceName.key(k))
     }
 
     // MARK: Ownership
@@ -167,8 +178,8 @@ enum Uninstaller {
 
     static func kind(_ place: LeftoverPlace) -> Kind {
         switch place.id {
-        case "caches", "logs", "savedState", "httpStorages", "webKit": return .safe
-        case "preferences", "appSupport", "cookies": return .data
+        case "caches", "logs", "savedState", "httpStorages", "webKit", "recentDocs": return .safe
+        case "preferences", "byHost", "appSupport", "cookies": return .data
         case "containers", "groupContainers", "appScripts", "launchAgents": return .review
         default: return .info
         }
@@ -202,7 +213,8 @@ enum Uninstaller {
                   t.ids.contains(meta.lowercased()),
                   own(meta) == .target else { return nil }
             return Match(why: "\(place.noun) of \(meta)")
-        case "groupContainers":
+        case "groupContainers", "appScripts":
+            // Application Scripts holds app-group folders too, named exactly like the group container.
             let byGroup = t.groups.contains(n.lowercased())
             let o = key.kind == .bundleID ? own(key.key) : nil
             if case .other = o { return nil }
@@ -221,6 +233,10 @@ enum Uninstaller {
             if key.kind == .bundleID {
                 guard own(key.key) == .target else { return nil }
                 return Match(why: "\(place.noun) of \(key.key)")
+            }
+            // A helper whose ID isn't in reverse-DNS form: exact ID only (not group- or team-wrapped).
+            if !key.wrapped, t.ids.dropFirst().contains(key.key.lowercased()), own(key.key) == .target {
+                return Match(why: "\(place.noun) of \(key.key), a helper inside \(app.name)")
             }
             if namedPlaces.contains(place.id) && place.tier == .orphan && named.contains(EvidenceName.key(n)) {
                 return Match(why: "\(place.noun) named like \(app.name). It isn't matched by bundle ID, so check it belongs to this app.",
@@ -242,6 +258,17 @@ enum Uninstaller {
         let others = others(t, ctx.inventory, extra: extra)
         let otherNames = ctx.inventory.apps.values.filter { $0.id.lowercased() != t.app.id.lowercased() }
             .flatMap { [$0.name] + $0.names } + extra.flatMap { [$0.name] + $0.names }
+        // A plain helper ID counts only when it starts with the app's own name (ChatGPTHelper in
+        // ChatGPT) and isn't another app's name: a generic word (CrashReporter) could name a
+        // folder of macOS or of another tool.
+        let otherNameKeys = Set(otherNames.map(EvidenceName.key))
+        let appNameKeys = Set(([app.name] + app.names).filter { !Protection.isProtectedName($0) }.map(EvidenceName.key))
+            .filter { $0.count >= 4 }
+        t = UninstallTarget(app: t.app, ids: t.ids.enumerated().filter { i, id in
+            let k = EvidenceName.key(id)
+            return i == 0 || CandidateKey.parse(id).kind == .bundleID
+                || (!otherNameKeys.contains(k) && appNameKeys.contains { k.hasPrefix($0) })
+        }.map(\.element), groups: t.groups, otherCopies: t.otherCopies)
         let named = nameKeys(app, others: otherNames)
         let ownerNames = [app.name]
         let lookup = ctx.inventory.lookup
@@ -286,7 +313,7 @@ enum Uninstaller {
             let names: [String]
             switch Leftovers.list(place, ctx) {
             case .skip, .failed: continue
-            case .needsFDA: fdaPlaces.append(place.rel); continue
+            case .needsFDA: fdaPlaces.append(place.shown); continue
             case .ok(let n): names = n
             }
             for n in names {

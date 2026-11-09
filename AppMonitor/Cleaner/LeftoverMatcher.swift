@@ -23,6 +23,9 @@ struct LeftoverPlace: Equatable {
     let noun: String           // used in reasons: "<noun> of <app>"
     var needsFDA = false       // entered only with Full Disk Access (spec 3.1, 9.1)
 
+    /// How notices name the place: its path, or a short name for a deep one.
+    var shown: String { id == "recentDocs" ? "Open Recent lists" : rel }
+
     func root(_ r: Roots) -> String { system ? r.library + "/" + rel : r.h(rel) }
 
     static let all: [LeftoverPlace] = [
@@ -39,6 +42,13 @@ struct LeftoverPlace: Equatable {
         LeftoverPlace(id: "groupContainers", rel: "Library/Group Containers", tier: .reviewOnly, noun: "Shared app data",
                       needsFDA: true),
         LeftoverPlace(id: "appScripts", rel: "Library/Application Scripts", tier: .reviewOnly, noun: "App scripts folder"),
+        // Per-computer settings: <id>.<hardware UUID>.plist, so the key is the ID with the UUID after it.
+        LeftoverPlace(id: "byHost", rel: "Library/Preferences/ByHost", tier: .reviewOnly, suffix: ".plist",
+                      noun: "Per-computer settings file"),
+        // The app's Open Recent list (<id>.sfl2 … .sfl4). macOS protects the folder, so FDA only.
+        LeftoverPlace(id: "recentDocs",
+                      rel: "Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments",
+                      tier: .reviewOnly, noun: "Recent documents list", needsFDA: true),
         LeftoverPlace(id: "launchAgents", rel: "Library/LaunchAgents", tier: .reviewOnly, suffix: ".plist",
                       noun: "Launch agent"),
         LeftoverPlace(id: "sysLaunchAgents", rel: "LaunchAgents", system: true, tier: .infoOnly, suffix: ".plist",

@@ -12,7 +12,7 @@ struct CandidateKey: Equatable {
 
     static let topLevel: Set<String> = ["com", "org", "net", "io", "app", "dev", "co", "me", "info",
                                         "biz", "edu", "gov", "ai", "tv", "us", "xyz", "pro", "eu"]
-    static let extensions = [".plist", ".savedstate", ".binarycookies"]
+    static let extensions = [".plist", ".savedstate", ".binarycookies", ".sfl4", ".sfl3", ".sfl2", ".sfl"]
 
     static func parse(_ rawName: String) -> CandidateKey {
         var s = rawName

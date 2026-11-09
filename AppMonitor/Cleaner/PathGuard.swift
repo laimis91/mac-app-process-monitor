@@ -33,7 +33,9 @@ struct PathGuard {
             "Library/Caches", "Library/Logs", "Library/Application Support", "Library/Preferences",
             "Library/Saved Application State", "Library/HTTPStorages", "Library/WebKit", "Library/Cookies",
             "Library/Containers", "Library/Group Containers", "Library/Application Scripts",
-            "Library/LaunchAgents", "Library/Developer/Xcode/DerivedData",
+            "Library/LaunchAgents", "Library/Preferences/ByHost",
+            "Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments",
+            "Library/Developer/Xcode/DerivedData",
             "Library/Developer/Xcode/iOS DeviceSupport", "Library/Mail Downloads",
         ].map { r.h($0) } + [r.temp]
         allowRoots = allow.map(c)
