@@ -465,6 +465,13 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         }, batch: 1))
         eq(calls.count, 1, "no further batches after a whole-request failure")
         eq(out5.count, 3, "every item reported")
+        // Finder busy before the clean: nothing handed over, every item failed once, no retries
+        let busyEnv = CleanEnvironment(guardian: PathGuard(roots: r), runningNow: { [] }, inventory: inv, roots: r,
+                                       dryRun: false, now: Date.init, prepareTrash: { Cleaner.finderBusy }, batchSize: 1)
+        let out6 = Cleaner.clean(pairs, env: busyEnv)
+        eq(out6.count, 3, "every item reported when Finder is busy")
+        check(out6.allSatisfy { $0.status == .failed && $0.reason == Cleaner.finderNotResponding }, "all failed with the busy reason")
+        check(pairs.allSatisfy { FileManager.default.fileExists(atPath: $0.1.path) }, "nothing moved when Finder is busy")
         // dry run never calls the mover
         calls = []
         var dry = env({ p in calls.append(p); return [:] })
@@ -1083,6 +1090,12 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         eq(Uninstaller.kind(LeftoverPlace.named("groupContainers")), .review, "group containers Review")
         eq(Uninstaller.kind(LeftoverPlace.named("launchAgents")), .review, "launch agents Review")
         eq(Uninstaller.kind(LeftoverPlace.named("sysLaunchDaemons")), .info, "/Library Info")
+        eq(Uninstaller.kind(LeftoverPlace.named("byHost")), .data, "per-computer settings Review, pre-selected")
+        eq(Uninstaller.kind(LeftoverPlace.named("recentDocs")), .safe, "recent documents Safe")
+        eq(CandidateKey.parse("com.vendor.app.sfl4").key, "com.vendor.app", "recent documents extension dropped")
+        check(Uninstaller.distinctivePlainID("chatgpthelper"), "distinctive plain helper ID")
+        check(!Uninstaller.distinctivePlainID("helper") && !Uninstaller.distinctivePlainID("updater")
+              && !Uninstaller.distinctivePlainID("tool") && !Uninstaller.distinctivePlainID("electron"), "generic plain IDs refused")
         let a = AppInfo(id: "com.vendor.app", name: "Vendor App", path: "/x", names: ["Vendor App", "VendorApp", "App"])
         eq(Uninstaller.nameKeys(a, others: []), ["vendorapp"], "name keys, short names left out")
         eq(Uninstaller.nameKeys(a, others: ["Vendor-App"]), [], "a name another app has is not used")
@@ -1109,6 +1122,10 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         app(A + "/Vendor.app/Contents/Library/LoginItems/Login.app", "com.vendor.login", "Login")
         app(A + "/Vendor.app/Contents/XPCServices/Updater.xpc", "org.sparkle-project.Updater", "Updater")
         app(A + "/Vendor.app/Contents/PlugIns/Widget.appex", "com.vendor.app.widget", "Widget")
+        app(A + "/Vendor.app/Contents/Helpers/VendorHelper.app", "VendorHelper", "VendorHelper")   // plain helper ID
+        app(A + "/Vendor.app/Contents/Helpers/Helper.app", "Helper", "Helper")                     // generic: left out
+        app(A + "/Vendor.app/Contents/Helpers/Locked.app", "Locked", "Locked")                     // another app's name: left out
+        app(A + "/Vendor.app/Contents/Helpers/CrashReporter.app", "CrashReporter", "CrashReporter") // generic word: left out
         app(A + "/Sub/Vendor Pro.app", "com.vendor.app.pro", "Vendor Pro")
         app(A + "/Fake.app", "com.apple.fake", "Fake")
         app(r.systemApplications + "/Sys.app", "com.fixture.sys", "Sys")
@@ -1168,6 +1185,17 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         try? fm.createSymbolicLink(atPath: L + "/Caches/com.vendor.app.link", withDestinationPath: r.home)
         file(L + "/Caches/com.vendor.app.ignored/x")
         file(r.library + "/LaunchDaemons/com.vendor.app.daemon.plist")
+        for n in ["VendorHelper.plist", "Helper.plist", "Locked.plist", "VendorHelperX.plist"] { file(L + "/Preferences/" + n) }
+        file(L + "/HTTPStorages/VendorHelper.binarycookies")
+        file(L + "/Logs/CrashReporter/x")
+        file(L + "/Preferences/ByHost/com.vendor.app.0A1B2C3D-0000-1111-2222-333344445555.plist")
+        file(L + "/Preferences/ByHost/com.other.app.0A1B2C3D-0000-1111-2222-333344445555.plist")
+        let recent = "Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments"
+        file(L + "/" + recent + "/com.vendor.app.sfl4")
+        file(L + "/" + recent + "/com.other.app.sfl4")
+        file(L + "/Application Scripts/group.com.vendor.app/x")
+        file(L + "/Application Scripts/TEAMID1234.shared/x")
+        file(L + "/Application Scripts/group.com.other.app/x")
 
         var probes = UninstallProbes()
         probes.groups = { p in
@@ -1183,14 +1211,29 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         }
         guard let plan = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(), probes: probes) else { check(false, "plan"); return }
         eq(plan.target.ids.first, "com.vendor.app", "target IDs start with the app's")
-        eq(Set(plan.target.ids), ["com.vendor.app", "com.vendor.login", "com.vendor.app.widget"], "target IDs: library XPC left out")
+        eq(Set(plan.target.ids), ["com.vendor.app", "com.vendor.login", "com.vendor.app.widget", "vendorhelper"],
+           "target IDs: library XPC, generic, unrelated and other-app-named plain IDs left out")
         let items = Dictionary(uniqueKeysWithValues: plan.categories.flatMap(\.items).map { ($0.path.replacingOccurrences(of: root + "/", with: ""), $0) })
         let H = "home/Library/"
         eq(Set(items.keys), Set(["Applications/Vendor.app", H + "Caches/com.vendor.app", H + "Application Support/com.vendor.app",
                                  H + "Logs/com.vendor.app", H + "Caches/com.vendor.app.widget", H + "Caches/com.vendor.login",
                                  H + "Containers/com.vendor.app.widget", H + "Group Containers/group.com.vendor.app",
                                  H + "Group Containers/TEAMID1234.shared", H + "Application Support/com.vendor.app.tool",
-                                 H + "LaunchAgents/agent.plist", "Library/LaunchDaemons/com.vendor.app.daemon.plist"]), "related items")
+                                 H + "LaunchAgents/agent.plist", "Library/LaunchDaemons/com.vendor.app.daemon.plist",
+                                 H + "Preferences/VendorHelper.plist", H + "HTTPStorages/VendorHelper.binarycookies",
+                                 H + "Preferences/ByHost/com.vendor.app.0A1B2C3D-0000-1111-2222-333344445555.plist",
+                                 H + recent + "/com.vendor.app.sfl4",
+                                 H + "Application Scripts/group.com.vendor.app", H + "Application Scripts/TEAMID1234.shared"]), "related items")
+        eq(items[H + "Preferences/ByHost/com.vendor.app.0A1B2C3D-0000-1111-2222-333344445555.plist"]?.preselected, true, "per-computer settings pre-selected")
+        eq(items[H + recent + "/com.vendor.app.sfl4"]?.risk, .safe, "recent documents list Safe")
+        eq(items[H + "Application Scripts/group.com.vendor.app"]?.preselected, false, "app-group scripts folder not pre-selected")
+        eq(items[H + "Application Scripts/TEAMID1234.shared"]?.risk, .info, "app-group scripts folder shared with another app: Info")
+        check(items[H + "Preferences/VendorHelper.plist"]?.reason.contains("a helper inside Vendor") == true, "plain helper ID reason")
+        let gd = PathGuard(roots: r)
+        for p in [H + "Preferences/ByHost/com.vendor.app.0A1B2C3D-0000-1111-2222-333344445555.plist", H + recent + "/com.vendor.app.sfl4"] {
+            guard let it = items[p], case .rule(let rr) = it.scope else { check(false, "rule scope \(p)"); continue }
+            eq(gd.check(it.path, allowRoot: rr), nil, "guard allows \(p)")
+        }
         let bundle = items["Applications/Vendor.app"]
         check(bundle?.appBundle == true && bundle?.risk == .requested && bundle?.preselected == true, "bundle Requested, pre-selected")
         eq(bundle?.scope, .appBundle(root: Roots.canonical(A)), "bundle's allow root is Applications")
@@ -1206,6 +1249,7 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         let noFDA = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(fda: .denied), probes: probes)
         check(noFDA?.categories.contains { $0.id == Uninstaller.fdaID } == true, "no FDA: notice")
         check(noFDA?.categories.flatMap(\.items).contains { $0.path.contains("Containers/") } == false, "no FDA: containers not entered")
+        check(noFDA?.categories.flatMap(\.items).contains { $0.path.hasSuffix(".sfl4") } == false, "no FDA: recent documents not entered")
         let busy = Uninstaller.plan(A + "/Vendor.app", ctx: ctx(running: [RunningApp(id: "com.vendor.login", name: "Login")]), probes: probes)
         eq(busy?.target.running, ["Login"], "running helper found")
         eq(busy?.target.runningByID, true, "found by bundle ID: Quit offered")

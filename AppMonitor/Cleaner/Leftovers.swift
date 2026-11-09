@@ -203,7 +203,7 @@ enum Leftovers {
         }
         if !fdaPlaces.isEmpty {
             cats.append(Category(id: fdaID, title: "App containers and shared app data", group: .leftovers, method: .none,
-                                 explanation: "Leftovers in \(fdaPlaces.map(\.rel).joined(separator: ", ")) are checked only with Full Disk Access.",
+                                 explanation: "Leftovers in \(fdaPlaces.map(\.shown).joined(separator: ", ")) are checked only with Full Disk Access.",
                                  items: [], notice: "Needs Full Disk Access"))
         }
         if decision.spotlightFailed > 0 {

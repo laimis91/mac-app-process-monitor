@@ -565,6 +565,9 @@ in under 200 ms from cached data.
 - `~/Library/Group Containers`
 - `~/Library/Application Scripts`
 - `~/Library/LaunchAgents`
+- `~/Library/Preferences/ByHost` (`<id>.<hardware UUID>.plist`)
+- `~/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments`
+  (`<id>.sfl2` … `.sfl4`, the app's Open Recent list), only when FDA is `granted`
 
 **Info only (needs admin):** `/Library/LaunchAgents`, `/Library/LaunchDaemons`,
 `/Library/PrivilegedHelperTools` and `/Library/Application Support`.
@@ -772,7 +775,12 @@ The uninstaller has its **own matching rules**. The leftover rules don't apply, 
 to no installed app" and the 30-day age limit would exclude the target app's own data.
 
 - Drop an `.app` onto the Disk tab, or pick an installed app from a list.
-- **Target ID set:** the app's bundle ID plus every embedded bundle ID (9.2, probe 6).
+- **Target ID set:** the app's bundle ID plus every embedded bundle ID (9.2, probe 6). An embedded ID
+  that isn't in reverse-DNS form (`ChatGPTHelper`) counts only when it is distinctive (6+ characters,
+  not protected, not a helper-like word, not another app's name) and starts with the app's own name
+  (`ChatGPTHelper` in ChatGPT). It matches data by the exact ID only. `~/Library/Application Scripts`
+  entries are matched like Group Containers (by app-group entitlement or target ID). Per-computer
+  settings (`Preferences/ByHost`) are Review, pre-selected; Open Recent lists are Safe.
 - **Related items** (keys compared without case; "dot-prefix" means equal to the ID, or starting
   with the ID followed by a dot):
   - children of the 9.1 locations, except `~/Library/LaunchAgents`, whose key dot-prefix-matches

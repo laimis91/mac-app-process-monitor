@@ -135,7 +135,33 @@ enum FinderTrash {
         let finder = NSAppleEventDescriptor(bundleIdentifier: "com.apple.finder")
         let status = AEDeterminePermissionToAutomateTarget(finder.aeDesc, AEEventClass(kAECoreSuite),
                                                            AEEventID(kAEDelete), true)
-        return status == noErr ? move : Cleaner.trashWithFileManager
+        guard status == noErr else { return Cleaner.trashWithFileManager }
+        // Finder answers Apple events one at a time. If it's stuck on another request, a delete
+        // would wait the full two minutes and then fail; a quick question shows that up front.
+        return answers() == false ? Cleaner.finderBusy : move
+    }
+
+    /// Asks Finder for its name. false: no answer within `timeout` seconds; nil: another error
+    /// (not running, for example), which the delete request itself reports.
+    static func answers(timeout: TimeInterval = 5) -> Bool? {
+        let finder = NSAppleEventDescriptor(bundleIdentifier: "com.apple.finder")
+        let spec = NSAppleEventDescriptor.record()
+        spec.setDescriptor(NSAppleEventDescriptor(typeCode: DescType(cProperty)), forKeyword: AEKeyword(keyAEDesiredClass))
+        spec.setDescriptor(NSAppleEventDescriptor.null(), forKeyword: AEKeyword(keyAEContainer))
+        spec.setDescriptor(NSAppleEventDescriptor(enumCode: DescType(formPropertyID)), forKeyword: AEKeyword(keyAEKeyForm))
+        spec.setDescriptor(NSAppleEventDescriptor(typeCode: DescType(pName)), forKeyword: AEKeyword(keyAEKeyData))
+        guard let name = spec.coerce(toDescriptorType: DescType(typeObjectSpecifier)) else { return nil }
+        let event = NSAppleEventDescriptor.appleEvent(withEventClass: AEEventClass(kAECoreSuite),
+                                                      eventID: AEEventID(kAEGetData), targetDescriptor: finder,
+                                                      returnID: AEReturnID(kAutoGenerateReturnID),
+                                                      transactionID: AETransactionID(kAnyTransactionID))
+        event.setParam(name, forKeyword: keyDirectObject)
+        do {
+            _ = try event.sendEvent(options: [.waitForReply], timeout: timeout)
+            return true
+        } catch {
+            return (error as NSError).code == Int(errAETimeout) ? false : nil
+        }
     }
 
     /// Items gone after Finder answered without an error were moved by Finder. If Finder reported
@@ -180,7 +206,7 @@ enum FinderTrash {
                     || TrashLookup.found(URL(fileURLWithPath: p).lastPathComponent, fileID: it.fileID, trash: trash, listed: listed)
             }
             if let c = code, wholeRequest.contains(c) {
-                let why = c == -1712 ? "Finder didn't answer in time" : c == -128 ? "Cancelled in Finder"
+                let why = c == -1712 ? "Finder didn't answer in time. If it stays busy, relaunch it and try again" : c == -128 ? "Cancelled in Finder"
                     : "Finder couldn't be used (error \(c))"
                 r[p] = .failedAll(gone ? why + "; check the Trash" : why)
             } else if let c = code {

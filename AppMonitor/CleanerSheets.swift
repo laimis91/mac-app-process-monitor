@@ -97,10 +97,16 @@ struct ResultSheet: View {
             }
             if !skipped.isEmpty {
                 Text("Skipped \(skipped.count):").foregroundStyle(Theme.orange)
+                // One reason for all of them (Finder busy, for example): said once, above the names.
+                let reasons = Set(skipped.map { $0.reason ?? $0.status.rawValue })
+                let shared = skipped.count > 1 && reasons.count == 1 ? reasons.first : nil
+                if let shared {
+                    Text(shared.hasSuffix(".") ? shared : shared + ".").font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(skipped.enumerated()), id: \.offset) { _, s in
-                            Text("\(s.name): \(s.reason ?? s.status.rawValue)").font(.caption)
+                            Text(shared == nil ? "\(s.name): \(s.reason ?? s.status.rawValue)" : s.name).font(.caption)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(maxHeight: 160)

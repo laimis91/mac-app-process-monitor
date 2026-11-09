@@ -272,6 +272,15 @@ enum Cleaner {
 
     static let notFoundInTrash = "Moved, but not found in the Trash: check it"
 
+    /// Why nothing was moved when Finder didn't answer a quick question before the clean.
+    static let finderNotResponding = "Finder isn't responding, so nothing was moved. Relaunch Finder (Option-right-click it in the Dock, then choose Relaunch) and try again"
+
+    /// The mover used when Finder is busy with something else: it hands nothing over, so no
+    /// request waits behind Finder's queue (and none is acted on later, after the clean ended).
+    static func finderBusy(_ items: [TrashItem]) -> [String: TrashResult] {
+        Dictionary(items.map { ($0.path, TrashResult.failedAll(finderNotResponding)) }, uniquingKeysWith: { a, _ in a })
+    }
+
     /// Fallback mover: works without Finder, but macOS doesn't record where items came from,
     /// so Finder's Put Back isn't offered for them. Each item is re-checked, and its folder
     /// opened without following any symlink, right before it is moved.
