@@ -465,6 +465,13 @@ func eq<T: Equatable>(_ a: T, _ b: T, _ what: String, line: Int = #line) {
         }, batch: 1))
         eq(calls.count, 1, "no further batches after a whole-request failure")
         eq(out5.count, 3, "every item reported")
+        // Finder busy before the clean: nothing handed over, every item failed once, no retries
+        let busyEnv = CleanEnvironment(guardian: PathGuard(roots: r), runningNow: { [] }, inventory: inv, roots: r,
+                                       dryRun: false, now: Date.init, prepareTrash: { Cleaner.finderBusy }, batchSize: 1)
+        let out6 = Cleaner.clean(pairs, env: busyEnv)
+        eq(out6.count, 3, "every item reported when Finder is busy")
+        check(out6.allSatisfy { $0.status == .failed && $0.reason == Cleaner.finderNotResponding }, "all failed with the busy reason")
+        check(pairs.allSatisfy { FileManager.default.fileExists(atPath: $0.1.path) }, "nothing moved when Finder is busy")
         // dry run never calls the mover
         calls = []
         var dry = env({ p in calls.append(p); return [:] })
